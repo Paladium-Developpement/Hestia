@@ -1,0 +1,87 @@
+plugins {
+	id 'eclipse'
+	id 'java-library'
+	id 'maven-publish'
+	id 'com.gradleup.shadow' version '8.3.5'
+}
+
+group = 'fr.paladium'
+version = '1.0.0'
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(8)
+	}
+	withSourcesJar()
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	api 'com.google.code.gson:gson:2.8.9'
+	implementation 'redis.clients:jedis:4.2.3'
+	implementation 'org.reflections:reflections:0.9.12'
+
+	compileOnly 'org.projectlombok:lombok:1.18.34'
+	annotationProcessor 'org.projectlombok:lombok:1.18.34'
+
+	testImplementation platform('org.junit:junit-bom:5.10.3')
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testImplementation 'org.testcontainers:testcontainers:1.21.4'
+	testCompileOnly 'org.projectlombok:lombok:1.18.34'
+	testAnnotationProcessor 'org.projectlombok:lombok:1.18.34'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+}
+
+test {
+	useJUnitPlatform()
+	testLogging {
+		events 'failed'
+		exceptionFormat 'full'
+	}
+}
+
+shadowJar {
+	archiveClassifier = 'all'
+	dependencies {
+		exclude(dependency('com.google.code.gson:gson'))
+	}
+	relocate 'javassist', 'fr.paladium.hestia.libs.javassist'
+	relocate 'org.json', 'fr.paladium.hestia.libs.json'
+	relocate 'org.slf4j', 'fr.paladium.hestia.libs.slf4j'
+	relocate 'redis.clients', 'fr.paladium.hestia.libs.jedis'
+	relocate 'org.reflections', 'fr.paladium.hestia.libs.reflections'
+	relocate 'org.apache.commons.pool2', 'fr.paladium.hestia.libs.pool2'
+}
+
+assemble {
+	dependsOn shadowJar
+}
+
+publishing {
+	repositories {
+		mavenLocal()
+		maven {
+			name = 'paladium'
+			url = uri(project.findProperty('artifactoryBaseUrl'))
+			allowInsecureProtocol = true
+			credentials {
+				username = System.getenv('MAVEN_REPO_USER') ?: project.findProperty('MAVEN_REPO_USER')
+				password = System.getenv('MAVEN_REPO_PASS') ?: project.findProperty('MAVEN_REPO_PASS')
+			}
+		}
+	}
+	publications {
+		maven(MavenPublication) {
+			artifactId = 'hestia'
+			from components.java
+			artifact shadowJar
+		}
+	}
+}
