@@ -4,7 +4,7 @@ import lombok.NonNull;
 
 public interface SharedStoreListener<T> {
 
-	public default void onLoad(final @NonNull T object) {}
+	public default void onPostLoad(final @NonNull T object) {}
 
 	public default void onPostDelete(final @NonNull T object) {}
 

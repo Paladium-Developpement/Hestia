@@ -1,6 +1,6 @@
 package fr.paladium.hestia.model;
 
-import fr.paladium.hestia.redis.json.utils.RedisJsonOverwrite;
+import fr.paladium.hestia.redis.json.annotation.RedisJsonOverwrite;
 import lombok.Getter;
 
 @Getter

@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import com.google.gson.JsonElement;
 import com.google.gson.annotations.SerializedName;
 
-import fr.paladium.hestia.redis.json.utils.RedisJsonOverwrite;
+import fr.paladium.hestia.redis.json.annotation.RedisJsonOverwrite;
 import lombok.Getter;
 import lombok.NonNull;
 

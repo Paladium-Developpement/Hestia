@@ -28,14 +28,14 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonParser;
 
 import fr.paladium.hestia.redis.RedisClient;
+import fr.paladium.hestia.redis.exception.RedisLockLostException;
 import fr.paladium.hestia.redis.impl.RedisCommand;
 import fr.paladium.hestia.redis.impl.RedisPipeline;
 import fr.paladium.hestia.redis.impl.RedisResponse;
 import fr.paladium.hestia.redis.index.RedisIndexResolver;
 import fr.paladium.hestia.redis.json.RedisJsonPatch;
+import fr.paladium.hestia.redis.json.RedisJsonSerializeResult;
 import fr.paladium.hestia.redis.json.RedisJsonSerializer;
-import fr.paladium.hestia.redis.json.utils.RedisJsonSerializeResult;
-import fr.paladium.hestia.redis.lock.RedisLockLostException;
 import fr.paladium.hestia.redis.lock.RedisLockToken;
 import fr.paladium.hestia.redis.query.RedisQuery;
 import lombok.Getter;
@@ -103,14 +103,14 @@ public class SharedStore<T> implements AutoCloseable {
 			return;
 		}
 
-		this.client.getMetrics().gauge(this.metric("tick.batch.size")).set(batch.size());
-		this.client.getMetrics().counter(this.metric("tick.total")).increment();
-		CompletableFuture.runAsync(() -> this.client.getMetrics().timer(this.metric("tick.latency")).record(() -> this.execute(batch)), this.executor).whenComplete((result, error) -> {
+		this.client.getMetrics().gauge(this.metric("flush.size")).set(batch.size());
+		this.client.getMetrics().counter(this.metric("flush.total")).increment();
+		CompletableFuture.runAsync(() -> this.client.getMetrics().timer(this.metric("flush.latency")).record(() -> this.execute(batch)), this.executor).whenComplete((result, error) -> {
 			if (error == null) {
 				return;
 			}
 
-			this.client.getMetrics().counter(this.metric("tick.failed")).increment();
+			this.client.getMetrics().counter(this.metric("flush.failed")).increment();
 			for (final Request failed : batch) {
 				failed.getFuture().completeExceptionally(error);
 			}
@@ -121,17 +121,8 @@ public class SharedStore<T> implements AutoCloseable {
 		return this.client.index(this.config.getType());
 	}
 
-	public long versionOf(final @NonNull T object) {
+	public long getVersion(final @NonNull T object) {
 		return this.client.getJsonSerializer().getVersion(object);
-	}
-
-	public @NonNull CompletableFuture<List<T>> getAll() {
-		this.client.getMetrics().counter(this.metric("getAll.total")).increment();
-		return CompletableFuture.supplyAsync(() -> this.client.getMetrics().timer(this.metric("getAll.latency")).record(() -> this.fetch(this.scanKeys())), this.executor);
-	}
-
-	public @NonNull String idOf(final @NonNull T object) {
-		return this.config.getIdentifier().apply(object);
 	}
 
 	public @NonNull Optional<T> parse(final String json) {
@@ -146,27 +137,36 @@ public class SharedStore<T> implements AutoCloseable {
 		}
 
 		for (final SharedStoreListener<T> listener : this.listeners) {
-			listener.onLoad(object);
+			listener.onPostLoad(object);
 		}
 
 		this.client.getJsonSerializer().bind(object, tree);
-		this.client.getJsonSerializer().snapshot(this.keyOf(this.idOf(object)), tree, this.config.getType());
+		this.client.getJsonSerializer().snapshot(this.getKey(this.getId(object)), tree, this.config.getType());
 		return Optional.of(object);
 	}
 
-	public @NonNull String keyOf(final @NonNull String id) {
+	public @NonNull CompletableFuture<List<T>> fetchAll() {
+		this.client.getMetrics().counter(this.metric("fetchAll.total")).increment();
+		return CompletableFuture.supplyAsync(() -> this.client.getMetrics().timer(this.metric("fetchAll.latency")).record(() -> this.fetch(this.scanKeys())), this.executor);
+	}
+
+	public @NonNull String getId(final @NonNull T object) {
+		return this.config.getIdentifier().apply(object);
+	}
+
+	public @NonNull String getKey(final @NonNull String id) {
 		return this.prefix + id;
 	}
 
-	public @NonNull CompletableFuture<T> get(final @NonNull String id) {
-		this.client.getMetrics().counter(this.metric("get.total")).increment();
-		return this.<String>queue(this.prefix + "get:" + id, RedisCommand.Json.get(this.keyOf(id))).thenApply(json -> this.parse(json).orElse(null));
+	public @NonNull CompletableFuture<T> fetch(final @NonNull String id) {
+		this.client.getMetrics().counter(this.metric("fetch.total")).increment();
+		return this.<String>queue(this.prefix + "fetch:" + id, RedisCommand.Json.get(this.getKey(id))).thenApply(json -> this.parse(json).orElse(null));
 	}
 
-	public @NonNull CompletableFuture<Map<String, Long>> getVersions() {
+	public @NonNull CompletableFuture<Map<String, Long>> fetchVersions() {
 		final String path = this.requireVersionPath();
-		this.client.getMetrics().counter(this.metric("getVersions.total")).increment();
-		return CompletableFuture.supplyAsync(() -> this.client.getMetrics().timer(this.metric("getVersions.latency")).record(() -> {
+		this.client.getMetrics().counter(this.metric("fetchVersions.total")).increment();
+		return CompletableFuture.supplyAsync(() -> this.client.getMetrics().timer(this.metric("fetchVersions.latency")).record(() -> {
 			final List<String> keys = this.scanKeys();
 			final Map<String, Long> versions = new HashMap<>(keys.size());
 			if (keys.isEmpty()) {
@@ -188,18 +188,18 @@ public class SharedStore<T> implements AutoCloseable {
 		return this.save(object, null);
 	}
 
-	public @NonNull CompletableFuture<Void> delete(final @NonNull T object) {
-		return this.delete(object, null);
-	}
-
-	public @NonNull CompletableFuture<T> findOne(final @NonNull String query) {
+	public @NonNull CompletableFuture<T> find(final @NonNull String query) {
 		this.client.getMetrics().counter(this.metric("find.total")).increment();
 		final RedisCommand command = RedisCommand.Search.search(RedisIndexResolver.indexName(this.config.getType()), query);
 		return this.<String>queue(this.prefix + "find:" + query, command).thenApply(json -> this.parse(json).orElse(null));
 	}
 
-	public @NonNull CompletableFuture<Long> getVersion(final @NonNull String id) {
-		final RedisCommand command = RedisCommand.Json.get(this.keyOf(id), this.requireVersionPath());
+	public @NonNull CompletableFuture<Void> delete(final @NonNull T object) {
+		return this.delete(object, null);
+	}
+
+	public @NonNull CompletableFuture<Long> fetchVersion(final @NonNull String id) {
+		final RedisCommand command = RedisCommand.Json.get(this.getKey(id), this.requireVersionPath());
 		return this.<String>queue(this.prefix + "version:" + id, command).thenApply(SharedStore::parseVersion);
 	}
 
@@ -216,16 +216,16 @@ public class SharedStore<T> implements AutoCloseable {
 		return this;
 	}
 
-	public @NonNull CompletableFuture<List<T>> getAll(final @NonNull Collection<String> ids) {
+	public @NonNull CompletableFuture<List<T>> fetchAll(final @NonNull Collection<String> ids) {
 		final List<String> keys = new ArrayList<>(ids.size());
 		for (final String id : ids) {
-			keys.add(this.keyOf(id));
+			keys.add(this.getKey(id));
 		}
 		return CompletableFuture.supplyAsync(() -> this.fetch(keys), this.executor);
 	}
 
 	public @NonNull CompletableFuture<Void> save(final @NonNull T object, final RedisLockToken token) {
-		final String key = this.keyOf(this.idOf(object));
+		final String key = this.getKey(this.getId(object));
 		final boolean create = !this.client.getJsonSerializer().hasSnapshot(key);
 		final JsonElement captured;
 		try {
@@ -251,7 +251,7 @@ public class SharedStore<T> implements AutoCloseable {
 		}
 
 		this.client.getMetrics().counter(this.metric("delete.total")).increment();
-		final String key = this.keyOf(this.idOf(object));
+		final String key = this.getKey(this.getId(object));
 		return this.chain(key, () -> this.doDelete(object, key, token));
 	}
 

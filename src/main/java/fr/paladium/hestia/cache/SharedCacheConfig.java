@@ -2,7 +2,7 @@ package fr.paladium.hestia.cache;
 
 import java.time.Duration;
 
-import fr.paladium.hestia.cache.transport.SharedCacheTransport;
+import fr.paladium.hestia.transport.SharedTransport;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -13,14 +13,14 @@ import lombok.NonNull;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class SharedCacheConfig {
 
-	private SharedCacheTransport transport;
+	private SharedTransport transport;
 	private Duration refreshInterval = Duration.ofMinutes(1L);
 
 	public static @NonNull SharedCacheConfig create() {
 		return new SharedCacheConfig();
 	}
 
-	public final @NonNull <T extends SharedCacheConfig> T transport(final @NonNull SharedCacheTransport transport) {
+	public final @NonNull <T extends SharedCacheConfig> T transport(final @NonNull SharedTransport transport) {
 		this.transport = transport;
 		return (T) this;
 	}

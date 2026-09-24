@@ -11,9 +11,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import fr.paladium.hestia.redis.impl.RedisCommand;
-import fr.paladium.hestia.redis.json.utils.RedisJsonSerializeResult;
-import fr.paladium.hestia.redis.json.utils.RedisJsonSnapshot;
-import fr.paladium.hestia.redis.json.utils.RedisJsonVersion;
+import fr.paladium.hestia.redis.json.annotation.RedisJsonSnapshot;
+import fr.paladium.hestia.redis.json.annotation.RedisJsonVersion;
 import lombok.Getter;
 import lombok.NonNull;
 

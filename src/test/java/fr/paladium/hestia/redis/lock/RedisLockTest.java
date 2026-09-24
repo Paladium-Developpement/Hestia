@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 
 import fr.paladium.hestia.HestiaTestSupport;
 import fr.paladium.hestia.redis.RedisClient;
+import fr.paladium.hestia.redis.exception.RedisLockBusyException;
 import fr.paladium.hestia.redis.impl.RedisCommand;
 
 public class RedisLockTest {

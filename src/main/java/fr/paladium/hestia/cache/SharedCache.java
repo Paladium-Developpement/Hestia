@@ -17,11 +17,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import fr.paladium.hestia.cache.transport.RedisPubSubTransport;
-import fr.paladium.hestia.cache.transport.SharedCacheMessage;
-import fr.paladium.hestia.cache.transport.SharedCacheTransport;
 import fr.paladium.hestia.store.SharedStore;
 import fr.paladium.hestia.store.SharedStoreListener;
+import fr.paladium.hestia.transport.RedisSharedTransport;
+import fr.paladium.hestia.transport.SharedMessage;
+import fr.paladium.hestia.transport.SharedTransport;
 import lombok.Getter;
 import lombok.NonNull;
 
@@ -30,8 +30,8 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 	private static final Logger LOGGER = Logger.getLogger(SharedCache.class.getName());
 
 	private final SharedCacheConfig config;
+	private final SharedTransport transport;
 	@Getter private final SharedStore<T> store;
-	private final SharedCacheTransport transport;
 
 	private final String origin = UUID.randomUUID().toString();
 	private final Map<String, T> values = new ConcurrentHashMap<>();
@@ -43,7 +43,7 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 	private SharedCache(final @NonNull SharedStore<T> store, final @NonNull SharedCacheConfig config) {
 		this.store = store;
 		this.config = config;
-		this.transport = config.getTransport() != null ? config.getTransport() : RedisPubSubTransport.create(store.getClient(), store.getConfig().getName() + ":sync");
+		this.transport = config.getTransport() != null ? config.getTransport() : RedisSharedTransport.create(store.getClient(), store.getConfig().getName() + ":sync");
 	}
 
 	public static @NonNull <T> SharedCache<T> create(final @NonNull SharedStore<T> store, final @NonNull SharedCacheConfig config) {
@@ -67,7 +67,7 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 
 	public @NonNull CompletableFuture<Void> start() {
 		this.transport.subscribe(this::receive);
-		return this.store.getAll().thenAccept(objects -> {
+		return this.store.fetchAll().thenAccept(objects -> {
 			for (final T object : objects) {
 				this.update(object);
 			}
@@ -89,22 +89,22 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 
 	public @NonNull CompletableFuture<Void> refresh() {
 		final List<T> snapshot = new ArrayList<>(this.values.values());
-		return this.store.getVersions().thenCompose(versions -> {
+		return this.store.fetchVersions().thenCompose(versions -> {
 			for (final T before : snapshot) {
-				final String id = this.store.idOf(before);
+				final String id = this.store.getId(before);
 				if (!versions.containsKey(id)) {
-					this.remove(id, this.store.versionOf(before));
+					this.remove(id, this.store.getVersion(before));
 				}
 			}
 
 			final List<String> stale = new ArrayList<>();
 			for (final Map.Entry<String, Long> entry : versions.entrySet()) {
 				final T cached = this.values.get(entry.getKey());
-				if (cached == null || this.store.versionOf(cached) < entry.getValue()) {
+				if (cached == null || this.store.getVersion(cached) < entry.getValue()) {
 					stale.add(entry.getKey());
 				}
 			}
-			return this.store.getAll(stale);
+			return this.store.fetchAll(stale);
 		}).thenAccept(objects -> {
 			for (final T object : objects) {
 				this.update(object);
@@ -114,9 +114,9 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 
 	@Override
 	public void onPostDelete(final @NonNull T object) {
-		final String id = this.store.idOf(object);
+		final String id = this.store.getId(object);
 		this.remove(id);
-		this.publish(new SharedCacheMessage(id, null, 0L, this.origin));
+		this.publish(new SharedMessage(id, null, 0L, this.origin));
 	}
 
 	public @NonNull Optional<T> get(final @NonNull String id) {
@@ -125,8 +125,8 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 
 	public @NonNull CompletableFuture<Void> invalidate(final @NonNull String id) {
 		final T cached = this.values.get(id);
-		final CompletableFuture<Boolean> stale = cached == null ? CompletableFuture.completedFuture(true) : this.store.getVersion(id).thenApply(version -> version == null || version > this.store.versionOf(cached));
-		return stale.thenCompose(refresh -> !refresh ? CompletableFuture.<Void>completedFuture(null) : this.store.get(id).thenAccept(object -> {
+		final CompletableFuture<Boolean> stale = cached == null ? CompletableFuture.completedFuture(true) : this.store.fetchVersion(id).thenApply(version -> version == null || version > this.store.getVersion(cached));
+		return stale.thenCompose(refresh -> !refresh ? CompletableFuture.<Void>completedFuture(null) : this.store.fetch(id).thenAccept(object -> {
 			if (object == null) {
 				this.remove(id);
 				return;
@@ -148,7 +148,7 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 
 		this.store.parse(json).ifPresent(merged -> {
 			this.update(merged);
-			this.publish(new SharedCacheMessage(this.store.idOf(merged), json, this.store.versionOf(merged), this.origin));
+			this.publish(new SharedMessage(this.store.getId(merged), json, this.store.getVersion(merged), this.origin));
 		});
 	}
 
@@ -165,11 +165,11 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 	}
 
 	private void update(final @NonNull T object) {
-		final String id = this.store.idOf(object);
-		final long version = this.store.versionOf(object);
+		final String id = this.store.getId(object);
+		final long version = this.store.getVersion(object);
 		final AtomicReference<T> previous = new AtomicReference<>();
 		final T stored = this.values.compute(id, (key, current) -> {
-			if (current != null && this.store.versionOf(current) >= version) {
+			if (current != null && this.store.getVersion(current) >= version) {
 				return current;
 			}
 
@@ -183,7 +183,7 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 
 		for (final SharedCacheListener<T> listener : this.listeners) {
 			try {
-				listener.onUpdate(previous.get(), object);
+				listener.onPostUpdate(previous.get(), object);
 			} catch (final Throwable throwable) {
 				SharedCache.LOGGER.log(Level.WARNING, "Listener of cache '" + this.store.getConfig().getName() + "' failed", throwable);
 			}
@@ -200,14 +200,14 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 	private void fireRemove(final @NonNull T removed) {
 		for (final SharedCacheListener<T> listener : this.listeners) {
 			try {
-				listener.onRemove(removed);
+				listener.onPostRemove(removed);
 			} catch (final Throwable throwable) {
 				SharedCache.LOGGER.log(Level.WARNING, "Listener of cache '" + this.store.getConfig().getName() + "' failed", throwable);
 			}
 		}
 	}
 
-	private void receive(final @NonNull SharedCacheMessage message) {
+	private void receive(final @NonNull SharedMessage message) {
 		if (this.origin.equals(message.getOrigin())) {
 			return;
 		}
@@ -218,14 +218,14 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 		}
 
 		final T cached = this.values.get(message.getId());
-		if (cached != null && this.store.versionOf(cached) >= message.getVersion()) {
+		if (cached != null && this.store.getVersion(cached) >= message.getVersion()) {
 			return;
 		}
 
 		this.store.parse(message.getJson()).ifPresent(this::update);
 	}
 
-	private void publish(final @NonNull SharedCacheMessage message) {
+	private void publish(final @NonNull SharedMessage message) {
 		try {
 			this.transport.publish(message);
 		} catch (final Throwable throwable) {
@@ -236,7 +236,7 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 	private void remove(final @NonNull String id, final long expectedVersion) {
 		final AtomicReference<T> removed = new AtomicReference<>();
 		this.values.computeIfPresent(id, (key, current) -> {
-			if (this.store.versionOf(current) != expectedVersion) {
+			if (this.store.getVersion(current) != expectedVersion) {
 				return current;
 			}
 

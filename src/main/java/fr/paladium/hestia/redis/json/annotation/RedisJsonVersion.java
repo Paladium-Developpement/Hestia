@@ -1,4 +1,4 @@
-package fr.paladium.hestia.redis.json.utils;
+package fr.paladium.hestia.redis.json.annotation;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;

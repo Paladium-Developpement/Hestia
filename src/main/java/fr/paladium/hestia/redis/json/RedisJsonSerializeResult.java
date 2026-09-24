@@ -1,6 +1,5 @@
-package fr.paladium.hestia.redis.json.utils;
+package fr.paladium.hestia.redis.json;
 
-import fr.paladium.hestia.redis.json.RedisJsonPatch;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NonNull;

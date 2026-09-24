@@ -1,4 +1,4 @@
-package fr.paladium.hestia.redis.lock;
+package fr.paladium.hestia.redis.exception;
 
 import lombok.NonNull;
 

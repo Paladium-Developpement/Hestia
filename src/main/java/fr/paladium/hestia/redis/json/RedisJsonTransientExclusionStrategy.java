@@ -1,8 +1,9 @@
-package fr.paladium.hestia.redis.json.utils;
+package fr.paladium.hestia.redis.json;
 
 import com.google.gson.ExclusionStrategy;
 import com.google.gson.FieldAttributes;
 
+import fr.paladium.hestia.redis.json.annotation.RedisJsonTransient;
 import lombok.NonNull;
 
 public final class RedisJsonTransientExclusionStrategy implements ExclusionStrategy {

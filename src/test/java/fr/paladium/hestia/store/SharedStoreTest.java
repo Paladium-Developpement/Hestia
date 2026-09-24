@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test;
 import fr.paladium.hestia.HestiaTestSupport;
 import fr.paladium.hestia.model.TestAccount;
 import fr.paladium.hestia.redis.RedisClient;
-import fr.paladium.hestia.redis.lock.RedisLockLostException;
+import fr.paladium.hestia.redis.exception.RedisLockLostException;
 import fr.paladium.hestia.redis.lock.RedisLockToken;
 import redis.clients.jedis.Jedis;
 
@@ -63,11 +63,11 @@ public class SharedStoreTest {
 		}
 
 		final List<String> listed = new ArrayList<>();
-		for (final TestAccount account : HestiaTestSupport.join(SharedStoreTest.second.getAll())) {
+		for (final TestAccount account : HestiaTestSupport.join(SharedStoreTest.second.fetchAll())) {
 			listed.add(account.getId());
 		}
 		assertTrue(listed.containsAll(ids));
-		assertEquals(250, HestiaTestSupport.join(SharedStoreTest.second.getAll(ids)).size());
+		assertEquals(250, HestiaTestSupport.join(SharedStoreTest.second.fetchAll(ids)).size());
 	}
 
 	@Test
@@ -77,7 +77,7 @@ public class SharedStoreTest {
 		account.getTags().add("founder");
 		HestiaTestSupport.join(SharedStoreTest.first.save(account));
 
-		final TestAccount read = HestiaTestSupport.join(SharedStoreTest.second.get(account.getId()));
+		final TestAccount read = HestiaTestSupport.join(SharedStoreTest.second.fetch(account.getId()));
 		assertEquals(100L, read.getBalance());
 		assertEquals(1L, read.getVersion());
 		assertEquals(Arrays.asList("founder"), read.getTags());
@@ -85,14 +85,14 @@ public class SharedStoreTest {
 
 	@Test
 	public void missingObjectsAreNull() throws Exception {
-		assertNull(HestiaTestSupport.join(SharedStoreTest.first.get(HestiaTestSupport.randomId())));
+		assertNull(HestiaTestSupport.join(SharedStoreTest.first.fetch(HestiaTestSupport.randomId())));
 	}
 
 	@Test
 	public void deletedObjectsDisappear() throws Exception {
 		final TestAccount account = SharedStoreTest.account(1L);
 		HestiaTestSupport.join(SharedStoreTest.first.delete(account));
-		assertNull(HestiaTestSupport.join(SharedStoreTest.second.get(account.getId())));
+		assertNull(HestiaTestSupport.join(SharedStoreTest.second.fetch(account.getId())));
 	}
 
 	@Test
@@ -109,7 +109,7 @@ public class SharedStoreTest {
 
 		SharedStoreTest.first.listen(listener);
 		HestiaTestSupport.join(SharedStoreTest.first.save(account));
-		assertNull(HestiaTestSupport.join(SharedStoreTest.first.get(account.getId())));
+		assertNull(HestiaTestSupport.join(SharedStoreTest.first.fetch(account.getId())));
 	}
 
 	@Test
@@ -119,7 +119,7 @@ public class SharedStoreTest {
 
 		final ExecutionException error = assertThrows(ExecutionException.class, () -> HestiaTestSupport.join(SharedStoreTest.first.save(account, new RedisLockToken("lock:" + account.getId(), "expired"))));
 		assertInstanceOf(RedisLockLostException.class, error.getCause());
-		assertEquals(10L, HestiaTestSupport.join(SharedStoreTest.second.get(account.getId())).getBalance());
+		assertEquals(10L, HestiaTestSupport.join(SharedStoreTest.second.fetch(account.getId())).getBalance());
 	}
 
 	@Test
@@ -128,9 +128,9 @@ public class SharedStoreTest {
 		account.setBalance(1L);
 		HestiaTestSupport.join(SharedStoreTest.first.save(account));
 
-		final Map<String, Long> versions = HestiaTestSupport.join(SharedStoreTest.second.getVersions());
+		final Map<String, Long> versions = HestiaTestSupport.join(SharedStoreTest.second.fetchVersions());
 		assertEquals(2L, versions.get(account.getId()));
-		assertEquals(2L, HestiaTestSupport.join(SharedStoreTest.second.getVersion(account.getId())));
+		assertEquals(2L, HestiaTestSupport.join(SharedStoreTest.second.fetchVersion(account.getId())));
 	}
 
 	@Test
@@ -139,8 +139,8 @@ public class SharedStoreTest {
 		account.setOwner("owner" + account.getId());
 		HestiaTestSupport.join(SharedStoreTest.first.save(account));
 
-		assertTrue(HestiaTestSupport.await(() -> SharedStoreTest.first.findOne("@owner:{" + account.getOwner() + "}").join() != null));
-		assertEquals(account.getId(), HestiaTestSupport.join(SharedStoreTest.first.findOne("@owner:{" + account.getOwner() + "}")).getId());
+		assertTrue(HestiaTestSupport.await(() -> SharedStoreTest.first.find("@owner:{" + account.getOwner() + "}").join() != null));
+		assertEquals(account.getId(), HestiaTestSupport.join(SharedStoreTest.first.find("@owner:{" + account.getOwner() + "}")).getId());
 	}
 
 	@Test
@@ -150,7 +150,7 @@ public class SharedStoreTest {
 			account.setBalance(30L);
 			return SharedStoreTest.first.save(account, token);
 		}));
-		assertEquals(30L, HestiaTestSupport.join(SharedStoreTest.second.get(account.getId())).getBalance());
+		assertEquals(30L, HestiaTestSupport.join(SharedStoreTest.second.fetch(account.getId())).getBalance());
 	}
 
 	@Test
@@ -159,22 +159,22 @@ public class SharedStoreTest {
 		try (Jedis admin = HestiaTestSupport.admin()) {
 			admin.set(foreign, "1");
 		}
-		assertFalse(HestiaTestSupport.join(SharedStoreTest.first.getVersions()).containsKey(foreign.substring("testaccount:".length())));
+		assertFalse(HestiaTestSupport.join(SharedStoreTest.first.fetchVersions()).containsKey(foreign.substring("testaccount:".length())));
 	}
 
 	@Test
 	public void concurrentReadsGetTheirOwnInstance() throws Exception {
 		final TestAccount account = SharedStoreTest.account(5L);
-		final CompletableFuture<TestAccount> firstRead = SharedStoreTest.first.get(account.getId());
-		final CompletableFuture<TestAccount> secondRead = SharedStoreTest.first.get(account.getId());
+		final CompletableFuture<TestAccount> firstRead = SharedStoreTest.first.fetch(account.getId());
+		final CompletableFuture<TestAccount> secondRead = SharedStoreTest.first.fetch(account.getId());
 		assertNotSame(HestiaTestSupport.join(firstRead), HestiaTestSupport.join(secondRead));
 	}
 
 	@Test
 	public void concurrentServersMergeTheirChanges() throws Exception {
 		final TestAccount account = SharedStoreTest.account(1000L);
-		final TestAccount onFirst = HestiaTestSupport.join(SharedStoreTest.first.get(account.getId()));
-		final TestAccount onSecond = HestiaTestSupport.join(SharedStoreTest.second.get(account.getId()));
+		final TestAccount onFirst = HestiaTestSupport.join(SharedStoreTest.first.fetch(account.getId()));
+		final TestAccount onSecond = HestiaTestSupport.join(SharedStoreTest.second.fetch(account.getId()));
 		onFirst.setBalance(onFirst.getBalance() + 100L);
 		onFirst.getTags().add("first");
 		onFirst.setLastSeen(111L);
@@ -185,7 +185,7 @@ public class SharedStoreTest {
 		HestiaTestSupport.join(SharedStoreTest.first.save(onFirst));
 		HestiaTestSupport.join(SharedStoreTest.second.save(onSecond));
 
-		final TestAccount merged = HestiaTestSupport.join(SharedStoreTest.first.get(account.getId()));
+		final TestAccount merged = HestiaTestSupport.join(SharedStoreTest.first.fetch(account.getId()));
 		assertEquals(1070L, merged.getBalance());
 		assertEquals(222L, merged.getLastSeen());
 		assertEquals(3L, merged.getVersion());
@@ -201,7 +201,7 @@ public class SharedStoreTest {
 			final SharedStore<TestAccount> store = thread % 2 == 0 ? SharedStoreTest.first : SharedStoreTest.second;
 			tasks.add(pool.submit(() -> {
 				for (int i = 0; i < 25; i++) {
-					final TestAccount copy = HestiaTestSupport.join(store.get(account.getId()));
+					final TestAccount copy = HestiaTestSupport.join(store.fetch(account.getId()));
 					copy.setBalance(copy.getBalance() + 1L);
 					HestiaTestSupport.join(store.save(copy));
 				}
@@ -214,7 +214,7 @@ public class SharedStoreTest {
 		}
 		pool.shutdown();
 
-		final TestAccount stored = HestiaTestSupport.join(SharedStoreTest.first.get(account.getId()));
+		final TestAccount stored = HestiaTestSupport.join(SharedStoreTest.first.fetch(account.getId()));
 		assertNotNull(stored);
 		assertEquals(200L, stored.getBalance());
 		assertEquals(201L, stored.getVersion());

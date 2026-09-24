@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import fr.paladium.hestia.redis.RedisClient;
+import fr.paladium.hestia.redis.exception.RedisLockBusyException;
 import fr.paladium.hestia.redis.impl.RedisCommand;
 import lombok.NonNull;
 

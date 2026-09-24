@@ -8,10 +8,10 @@ import java.util.Map;
 import com.google.gson.JsonElement;
 
 import fr.paladium.hestia.redis.index.RedisIndex;
-import fr.paladium.hestia.redis.json.utils.RedisJsonOverwrite;
-import fr.paladium.hestia.redis.json.utils.RedisJsonSnapshot;
-import fr.paladium.hestia.redis.json.utils.RedisJsonTransient;
-import fr.paladium.hestia.redis.json.utils.RedisJsonVersion;
+import fr.paladium.hestia.redis.json.annotation.RedisJsonOverwrite;
+import fr.paladium.hestia.redis.json.annotation.RedisJsonSnapshot;
+import fr.paladium.hestia.redis.json.annotation.RedisJsonTransient;
+import fr.paladium.hestia.redis.json.annotation.RedisJsonVersion;
 import lombok.Getter;
 import lombok.Setter;
 

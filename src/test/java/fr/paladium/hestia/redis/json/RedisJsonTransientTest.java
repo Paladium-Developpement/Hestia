@@ -10,7 +10,6 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 
 import fr.paladium.hestia.model.TestAccount;
-import fr.paladium.hestia.redis.json.utils.RedisJsonTransientExclusionStrategy;
 
 public class RedisJsonTransientTest {
 

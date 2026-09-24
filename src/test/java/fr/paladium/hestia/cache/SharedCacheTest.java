@@ -50,7 +50,7 @@ public class SharedCacheTest {
 		SharedCacheTest.second.listen(new SharedCacheListener<TestAccount>() {
 
 			@Override
-			public void onUpdate(final TestAccount previous, final TestAccount current) {
+			public void onPostUpdate(final TestAccount previous, final TestAccount current) {
 				SharedCacheTest.UPDATES.add(current.getId() + ":" + current.getVersion());
 			}
 
