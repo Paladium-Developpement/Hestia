@@ -1,0 +1,252 @@
+package fr.paladium.hestia.cache;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+import fr.paladium.hestia.cache.transport.RedisPubSubTransport;
+import fr.paladium.hestia.cache.transport.SharedCacheMessage;
+import fr.paladium.hestia.cache.transport.SharedCacheTransport;
+import fr.paladium.hestia.store.SharedStore;
+import fr.paladium.hestia.store.SharedStoreListener;
+import lombok.Getter;
+import lombok.NonNull;
+
+public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
+
+	private static final Logger LOGGER = Logger.getLogger(SharedCache.class.getName());
+
+	private final SharedCacheConfig config;
+	@Getter private final SharedStore<T> store;
+	private final SharedCacheTransport transport;
+
+	private final String origin = UUID.randomUUID().toString();
+	private final Map<String, T> values = new ConcurrentHashMap<>();
+	private final List<SharedCacheListener<T>> listeners = new CopyOnWriteArrayList<>();
+	private final Collection<T> view = Collections.unmodifiableCollection(this.values.values());
+
+	private ScheduledExecutorService scheduler;
+
+	private SharedCache(final @NonNull SharedStore<T> store, final @NonNull SharedCacheConfig config) {
+		this.store = store;
+		this.config = config;
+		this.transport = config.getTransport() != null ? config.getTransport() : RedisPubSubTransport.create(store.getClient(), store.getConfig().getName() + ":sync");
+	}
+
+	public static @NonNull <T> SharedCache<T> create(final @NonNull SharedStore<T> store, final @NonNull SharedCacheConfig config) {
+		if (store.getVersionPath() == null) {
+			throw new IllegalArgumentException("A shared cache requires a @RedisJsonVersion field on " + store.getConfig().getType().getName());
+		}
+
+		final SharedCache<T> cache = new SharedCache<>(store, config);
+		store.listen(cache);
+		return cache;
+	}
+
+	@Override
+	public void close() {
+		if (this.scheduler != null) {
+			this.scheduler.shutdownNow();
+			this.scheduler = null;
+		}
+		this.transport.close();
+	}
+
+	public @NonNull CompletableFuture<Void> start() {
+		this.transport.subscribe(this::receive);
+		return this.store.getAll().thenAccept(objects -> {
+			for (final T object : objects) {
+				this.update(object);
+			}
+		}).thenRun(() -> {
+			this.scheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
+				final Thread thread = new Thread(runnable, "HestiaCacheRefresher-" + this.store.getConfig().getName());
+				thread.setDaemon(true);
+				return thread;
+			});
+
+			final long intervalMs = this.config.getRefreshInterval().toMillis();
+			this.scheduler.scheduleAtFixedRate(this::safeRefresh, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
+		});
+	}
+
+	public @NonNull Collection<T> getAll() {
+		return this.view;
+	}
+
+	public @NonNull CompletableFuture<Void> refresh() {
+		final List<T> snapshot = new ArrayList<>(this.values.values());
+		return this.store.getVersions().thenCompose(versions -> {
+			for (final T before : snapshot) {
+				final String id = this.store.idOf(before);
+				if (!versions.containsKey(id)) {
+					this.remove(id, this.store.versionOf(before));
+				}
+			}
+
+			final List<String> stale = new ArrayList<>();
+			for (final Map.Entry<String, Long> entry : versions.entrySet()) {
+				final T cached = this.values.get(entry.getKey());
+				if (cached == null || this.store.versionOf(cached) < entry.getValue()) {
+					stale.add(entry.getKey());
+				}
+			}
+			return this.store.getAll(stale);
+		}).thenAccept(objects -> {
+			for (final T object : objects) {
+				this.update(object);
+			}
+		});
+	}
+
+	@Override
+	public void onPostDelete(final @NonNull T object) {
+		final String id = this.store.idOf(object);
+		this.remove(id);
+		this.publish(new SharedCacheMessage(id, null, 0L, this.origin));
+	}
+
+	public @NonNull Optional<T> get(final @NonNull String id) {
+		return Optional.ofNullable(this.values.get(id));
+	}
+
+	public @NonNull CompletableFuture<Void> invalidate(final @NonNull String id) {
+		final T cached = this.values.get(id);
+		final CompletableFuture<Boolean> stale = cached == null ? CompletableFuture.completedFuture(true) : this.store.getVersion(id).thenApply(version -> version == null || version > this.store.versionOf(cached));
+		return stale.thenCompose(refresh -> !refresh ? CompletableFuture.<Void>completedFuture(null) : this.store.get(id).thenAccept(object -> {
+			if (object == null) {
+				this.remove(id);
+				return;
+			}
+			this.update(object);
+		}));
+	}
+
+	public @NonNull SharedCache<T> listen(final @NonNull SharedCacheListener<T> listener) {
+		this.listeners.add(listener);
+		return this;
+	}
+
+	@Override
+	public void onPostSave(final @NonNull T object, final String json, final boolean create) {
+		if (json == null) {
+			return;
+		}
+
+		this.store.parse(json).ifPresent(merged -> {
+			this.update(merged);
+			this.publish(new SharedCacheMessage(this.store.idOf(merged), json, this.store.versionOf(merged), this.origin));
+		});
+	}
+
+	private void safeRefresh() {
+		try {
+			this.refresh().whenComplete((result, error) -> {
+				if (error != null) {
+					SharedCache.LOGGER.log(Level.WARNING, "Refresh of cache '" + this.store.getConfig().getName() + "' failed", error);
+				}
+			});
+		} catch (final Throwable throwable) {
+			SharedCache.LOGGER.log(Level.WARNING, "Refresh of cache '" + this.store.getConfig().getName() + "' failed", throwable);
+		}
+	}
+
+	private void update(final @NonNull T object) {
+		final String id = this.store.idOf(object);
+		final long version = this.store.versionOf(object);
+		final AtomicReference<T> previous = new AtomicReference<>();
+		final T stored = this.values.compute(id, (key, current) -> {
+			if (current != null && this.store.versionOf(current) >= version) {
+				return current;
+			}
+
+			previous.set(current);
+			return object;
+		});
+
+		if (stored != object) {
+			return;
+		}
+
+		for (final SharedCacheListener<T> listener : this.listeners) {
+			try {
+				listener.onUpdate(previous.get(), object);
+			} catch (final Throwable throwable) {
+				SharedCache.LOGGER.log(Level.WARNING, "Listener of cache '" + this.store.getConfig().getName() + "' failed", throwable);
+			}
+		}
+	}
+
+	private void remove(final @NonNull String id) {
+		final T removed = this.values.remove(id);
+		if (removed != null) {
+			this.fireRemove(removed);
+		}
+	}
+
+	private void fireRemove(final @NonNull T removed) {
+		for (final SharedCacheListener<T> listener : this.listeners) {
+			try {
+				listener.onRemove(removed);
+			} catch (final Throwable throwable) {
+				SharedCache.LOGGER.log(Level.WARNING, "Listener of cache '" + this.store.getConfig().getName() + "' failed", throwable);
+			}
+		}
+	}
+
+	private void receive(final @NonNull SharedCacheMessage message) {
+		if (this.origin.equals(message.getOrigin())) {
+			return;
+		}
+
+		if (message.getJson() == null) {
+			this.remove(message.getId());
+			return;
+		}
+
+		final T cached = this.values.get(message.getId());
+		if (cached != null && this.store.versionOf(cached) >= message.getVersion()) {
+			return;
+		}
+
+		this.store.parse(message.getJson()).ifPresent(this::update);
+	}
+
+	private void publish(final @NonNull SharedCacheMessage message) {
+		try {
+			this.transport.publish(message);
+		} catch (final Throwable throwable) {
+			SharedCache.LOGGER.log(Level.WARNING, "Publication of cache '" + this.store.getConfig().getName() + "' failed", throwable);
+		}
+	}
+
+	private void remove(final @NonNull String id, final long expectedVersion) {
+		final AtomicReference<T> removed = new AtomicReference<>();
+		this.values.computeIfPresent(id, (key, current) -> {
+			if (this.store.versionOf(current) != expectedVersion) {
+				return current;
+			}
+
+			removed.set(current);
+			return null;
+		});
+
+		if (removed.get() != null) {
+			this.fireRemove(removed.get());
+		}
+	}
+
+}
