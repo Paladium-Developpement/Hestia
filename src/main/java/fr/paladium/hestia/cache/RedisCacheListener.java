@@ -2,7 +2,7 @@ package fr.paladium.hestia.cache;
 
 import lombok.NonNull;
 
-public interface SharedCacheListener<T> {
+public interface RedisCacheListener<T> {
 
 	public default void onPostRemove(final @NonNull T removed) {}
 

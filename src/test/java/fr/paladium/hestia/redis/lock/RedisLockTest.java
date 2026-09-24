@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import fr.paladium.hestia.HestiaTestSupport;
@@ -20,6 +21,7 @@ import fr.paladium.hestia.redis.RedisClient;
 import fr.paladium.hestia.redis.exception.RedisLockBusyException;
 import fr.paladium.hestia.redis.impl.RedisCommand;
 
+@Tag("integration")
 public class RedisLockTest {
 
 	private static RedisClient client;

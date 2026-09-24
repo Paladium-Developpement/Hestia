@@ -1,11 +1,11 @@
-package fr.paladium.hestia.transport;
+package fr.paladium.hestia.cache.transport;
 
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
 @Getter
 @AllArgsConstructor
-public final class SharedMessage {
+public final class CacheMessage {
 
 	private final String id;
 	private final String json;

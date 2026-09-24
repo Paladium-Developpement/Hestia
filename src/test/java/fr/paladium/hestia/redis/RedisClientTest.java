@@ -10,6 +10,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import fr.paladium.hestia.HestiaTestSupport;
@@ -19,6 +20,7 @@ import fr.paladium.hestia.redis.pubsub.RedisSubscription;
 import redis.clients.jedis.exceptions.JedisConnectionException;
 import redis.clients.jedis.exceptions.JedisDataException;
 
+@Tag("integration")
 public class RedisClientTest {
 
 	private static RedisClient client;

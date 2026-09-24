@@ -42,9 +42,9 @@ import lombok.Getter;
 import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 
-public class SharedStore<T> implements AutoCloseable {
+public class RedisStore<T> implements AutoCloseable {
 
-	private static final Logger LOGGER = Logger.getLogger(SharedStore.class.getName());
+	private static final Logger LOGGER = Logger.getLogger(RedisStore.class.getName());
 	private static final String DELETE_SCRIPT = "if redis.call('GET', KEYS[2]) ~= ARGV[1] then return -1 end return redis.call('DEL', KEYS[1])";
 
 	private final String prefix;
@@ -52,29 +52,29 @@ public class SharedStore<T> implements AutoCloseable {
 	@Getter private final String versionPath;
 	@Getter private final RedisClient client;
 	private final ScheduledExecutorService scheduler;
-	@Getter private final SharedStoreConfig<T> config;
+	@Getter private final RedisStoreConfig<T> config;
 
 	private final Queue<Request> queue = new ConcurrentLinkedQueue<>();
 	private final Map<String, Request> requests = new ConcurrentHashMap<>();
-	private final List<SharedStoreListener<T>> listeners = new CopyOnWriteArrayList<>();
+	private final List<RedisStoreListener<T>> listeners = new CopyOnWriteArrayList<>();
 	private final Map<String, CompletableFuture<Void>> operations = new ConcurrentHashMap<>();
 
-	private SharedStore(final @NonNull RedisClient client, final @NonNull SharedStoreConfig<T> config) {
+	private RedisStore(final @NonNull RedisClient client, final @NonNull RedisStoreConfig<T> config) {
 		final Field versionField = RedisJsonSerializer.resolveVersionField(config.getType());
 		this.client = client;
 		this.config = config;
 		this.prefix = config.getName() + ":";
 		this.versionPath = versionField == null ? null : RedisCommand.ROOT_PATH + "." + versionField.getName();
-		this.executor = SharedStore.createExecutor(config);
-		this.scheduler = SharedStore.createScheduler(config);
+		this.executor = RedisStore.createExecutor(config);
+		this.scheduler = RedisStore.createScheduler(config);
 		if (!config.getFlushInterval().isZero() && !config.getFlushInterval().isNegative()) {
 			final long intervalMs = config.getFlushInterval().toMillis();
 			this.scheduler.scheduleAtFixedRate(this::safeFlush, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
 		}
 	}
 
-	public static @NonNull <T> SharedStore<T> create(final @NonNull RedisClient client, final @NonNull SharedStoreConfig<T> config) {
-		return new SharedStore<>(client, config);
+	public static @NonNull <T> RedisStore<T> create(final @NonNull RedisClient client, final @NonNull RedisStoreConfig<T> config) {
+		return new RedisStore<>(client, config);
 	}
 
 	@Override
@@ -136,7 +136,7 @@ public class SharedStore<T> implements AutoCloseable {
 			return Optional.empty();
 		}
 
-		for (final SharedStoreListener<T> listener : this.listeners) {
+		for (final RedisStoreListener<T> listener : this.listeners) {
 			listener.onPostLoad(object);
 		}
 
@@ -175,7 +175,7 @@ public class SharedStore<T> implements AutoCloseable {
 
 			final List<String> values = this.client.execute(RedisCommand.Json.mget(path, keys.toArray(new String[0])).withResponse(RedisResponse.stringList()));
 			for (int i = 0; i < keys.size(); i++) {
-				final Long version = SharedStore.parseVersion(values.get(i));
+				final Long version = RedisStore.parseVersion(values.get(i));
 				if (version != null) {
 					versions.put(keys.get(i).substring(this.prefix.length()), version);
 				}
@@ -200,7 +200,7 @@ public class SharedStore<T> implements AutoCloseable {
 
 	public @NonNull CompletableFuture<Long> fetchVersion(final @NonNull String id) {
 		final RedisCommand command = RedisCommand.Json.get(this.getKey(id), this.requireVersionPath());
-		return this.<String>queue(this.prefix + "version:" + id, command).thenApply(SharedStore::parseVersion);
+		return this.<String>queue(this.prefix + "version:" + id, command).thenApply(RedisStore::parseVersion);
 	}
 
 	public @NonNull <R> CompletableFuture<R> queue(final @NonNull RedisQuery<R> query) {
@@ -211,7 +211,7 @@ public class SharedStore<T> implements AutoCloseable {
 		return this.submit(null, command).thenApply(command::parseResponse);
 	}
 
-	public @NonNull SharedStore<T> listen(final @NonNull SharedStoreListener<T> listener) {
+	public @NonNull RedisStore<T> listen(final @NonNull RedisStoreListener<T> listener) {
 		this.listeners.add(listener);
 		return this;
 	}
@@ -234,7 +234,7 @@ public class SharedStore<T> implements AutoCloseable {
 			}
 			captured = this.client.getJsonSerializer().capture(object);
 		} catch (final Throwable throwable) {
-			return SharedStore.failed(throwable);
+			return RedisStore.failed(throwable);
 		}
 
 		this.client.getMetrics().counter(this.metric("save.total")).increment();
@@ -247,7 +247,7 @@ public class SharedStore<T> implements AutoCloseable {
 				return CompletableFuture.completedFuture(null);
 			}
 		} catch (final Throwable throwable) {
-			return SharedStore.failed(throwable);
+			return RedisStore.failed(throwable);
 		}
 
 		this.client.getMetrics().counter(this.metric("delete.total")).increment();
@@ -263,7 +263,7 @@ public class SharedStore<T> implements AutoCloseable {
 		try {
 			this.flush();
 		} catch (final Throwable throwable) {
-			SharedStore.LOGGER.log(Level.WARNING, "Flush of store '" + this.config.getName() + "' failed", throwable);
+			RedisStore.LOGGER.log(Level.WARNING, "Flush of store '" + this.config.getName() + "' failed", throwable);
 		}
 	}
 
@@ -386,18 +386,18 @@ public class SharedStore<T> implements AutoCloseable {
 		return objects;
 	}
 
-	private void fire(final @NonNull Consumer<SharedStoreListener<T>> action) {
-		for (final SharedStoreListener<T> listener : this.listeners) {
+	private void fire(final @NonNull Consumer<RedisStoreListener<T>> action) {
+		for (final RedisStoreListener<T> listener : this.listeners) {
 			try {
 				action.accept(listener);
 			} catch (final Throwable throwable) {
-				SharedStore.LOGGER.log(Level.WARNING, "Listener of store '" + this.config.getName() + "' failed", throwable);
+				RedisStore.LOGGER.log(Level.WARNING, "Listener of store '" + this.config.getName() + "' failed", throwable);
 			}
 		}
 	}
 
-	private boolean isCancelled(final @NonNull Predicate<SharedStoreListener<T>> check) {
-		for (final SharedStoreListener<T> listener : this.listeners) {
+	private boolean isCancelled(final @NonNull Predicate<RedisStoreListener<T>> check) {
+		for (final RedisStoreListener<T> listener : this.listeners) {
 			if (check.test(listener)) {
 				return true;
 			}
@@ -427,7 +427,7 @@ public class SharedStore<T> implements AutoCloseable {
 			if (token == null) {
 				this.client.execute(RedisCommand.Json.del(key));
 			} else {
-				final Long result = this.client.execute(RedisCommand.Base.eval(SharedStore.DELETE_SCRIPT, 2, key, token.getKey(), token.getToken()));
+				final Long result = this.client.execute(RedisCommand.Base.eval(RedisStore.DELETE_SCRIPT, 2, key, token.getKey(), token.getToken()));
 				if (result != null && result == RedisJsonPatch.REJECTED) {
 					throw new RedisLockLostException(token.getKey());
 				}
@@ -446,7 +446,7 @@ public class SharedStore<T> implements AutoCloseable {
 				return base.thenComposeAsync(value -> operation.get(), this.executor);
 			});
 		} catch (final Throwable throwable) {
-			return SharedStore.failed(throwable);
+			return RedisStore.failed(throwable);
 		}
 		chained.whenComplete((result, error) -> this.operations.remove(key, chained));
 		return chained;
@@ -486,7 +486,7 @@ public class SharedStore<T> implements AutoCloseable {
 		return future;
 	}
 
-	private static @NonNull ExecutorService createExecutor(final @NonNull SharedStoreConfig<?> config) {
+	private static @NonNull ExecutorService createExecutor(final @NonNull RedisStoreConfig<?> config) {
 		final ThreadPoolExecutor executor = new ThreadPoolExecutor(config.getThreads(), config.getThreads(), 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), runnable -> {
 			final Thread thread = new Thread(runnable, "HestiaStore-" + config.getName());
 			thread.setDaemon(true);
@@ -496,7 +496,7 @@ public class SharedStore<T> implements AutoCloseable {
 		return executor;
 	}
 
-	private static @NonNull ScheduledExecutorService createScheduler(final @NonNull SharedStoreConfig<?> config) {
+	private static @NonNull ScheduledExecutorService createScheduler(final @NonNull RedisStoreConfig<?> config) {
 		return Executors.newSingleThreadScheduledExecutor(runnable -> {
 			final Thread thread = new Thread(runnable, "HestiaFlusher-" + config.getName());
 			thread.setDaemon(true);

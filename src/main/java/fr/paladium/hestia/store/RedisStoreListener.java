@@ -2,7 +2,7 @@ package fr.paladium.hestia.store;
 
 import lombok.NonNull;
 
-public interface SharedStoreListener<T> {
+public interface RedisStoreListener<T> {
 
 	public default void onPostLoad(final @NonNull T object) {}
 

@@ -17,41 +17,41 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import fr.paladium.hestia.store.SharedStore;
-import fr.paladium.hestia.store.SharedStoreListener;
-import fr.paladium.hestia.transport.RedisSharedTransport;
-import fr.paladium.hestia.transport.SharedMessage;
-import fr.paladium.hestia.transport.SharedTransport;
+import fr.paladium.hestia.cache.transport.CacheMessage;
+import fr.paladium.hestia.cache.transport.CacheTransport;
+import fr.paladium.hestia.cache.transport.RedisCacheTransport;
+import fr.paladium.hestia.store.RedisStore;
+import fr.paladium.hestia.store.RedisStoreListener;
 import lombok.Getter;
 import lombok.NonNull;
 
-public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
+public class RedisCache<T> implements RedisStoreListener<T>, AutoCloseable {
 
-	private static final Logger LOGGER = Logger.getLogger(SharedCache.class.getName());
+	private static final Logger LOGGER = Logger.getLogger(RedisCache.class.getName());
 
-	private final SharedCacheConfig config;
-	private final SharedTransport transport;
-	@Getter private final SharedStore<T> store;
+	private final RedisCacheConfig config;
+	private final CacheTransport transport;
+	@Getter private final RedisStore<T> store;
 
 	private final String origin = UUID.randomUUID().toString();
 	private final Map<String, T> values = new ConcurrentHashMap<>();
-	private final List<SharedCacheListener<T>> listeners = new CopyOnWriteArrayList<>();
+	private final List<RedisCacheListener<T>> listeners = new CopyOnWriteArrayList<>();
 	private final Collection<T> view = Collections.unmodifiableCollection(this.values.values());
 
 	private ScheduledExecutorService scheduler;
 
-	private SharedCache(final @NonNull SharedStore<T> store, final @NonNull SharedCacheConfig config) {
+	private RedisCache(final @NonNull RedisStore<T> store, final @NonNull RedisCacheConfig config) {
 		this.store = store;
 		this.config = config;
-		this.transport = config.getTransport() != null ? config.getTransport() : RedisSharedTransport.create(store.getClient(), store.getConfig().getName() + ":sync");
+		this.transport = config.getTransport() != null ? config.getTransport() : RedisCacheTransport.create(store.getClient(), store.getConfig().getName() + ":sync");
 	}
 
-	public static @NonNull <T> SharedCache<T> create(final @NonNull SharedStore<T> store, final @NonNull SharedCacheConfig config) {
+	public static @NonNull <T> RedisCache<T> create(final @NonNull RedisStore<T> store, final @NonNull RedisCacheConfig config) {
 		if (store.getVersionPath() == null) {
 			throw new IllegalArgumentException("A shared cache requires a @RedisJsonVersion field on " + store.getConfig().getType().getName());
 		}
 
-		final SharedCache<T> cache = new SharedCache<>(store, config);
+		final RedisCache<T> cache = new RedisCache<>(store, config);
 		store.listen(cache);
 		return cache;
 	}
@@ -116,7 +116,7 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 	public void onPostDelete(final @NonNull T object) {
 		final String id = this.store.getId(object);
 		this.remove(id);
-		this.publish(new SharedMessage(id, null, 0L, this.origin));
+		this.publish(new CacheMessage(id, null, 0L, this.origin));
 	}
 
 	public @NonNull Optional<T> get(final @NonNull String id) {
@@ -135,7 +135,7 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 		}));
 	}
 
-	public @NonNull SharedCache<T> listen(final @NonNull SharedCacheListener<T> listener) {
+	public @NonNull RedisCache<T> listen(final @NonNull RedisCacheListener<T> listener) {
 		this.listeners.add(listener);
 		return this;
 	}
@@ -148,7 +148,7 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 
 		this.store.parse(json).ifPresent(merged -> {
 			this.update(merged);
-			this.publish(new SharedMessage(this.store.getId(merged), json, this.store.getVersion(merged), this.origin));
+			this.publish(new CacheMessage(this.store.getId(merged), json, this.store.getVersion(merged), this.origin));
 		});
 	}
 
@@ -156,11 +156,11 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 		try {
 			this.refresh().whenComplete((result, error) -> {
 				if (error != null) {
-					SharedCache.LOGGER.log(Level.WARNING, "Refresh of cache '" + this.store.getConfig().getName() + "' failed", error);
+					RedisCache.LOGGER.log(Level.WARNING, "Refresh of cache '" + this.store.getConfig().getName() + "' failed", error);
 				}
 			});
 		} catch (final Throwable throwable) {
-			SharedCache.LOGGER.log(Level.WARNING, "Refresh of cache '" + this.store.getConfig().getName() + "' failed", throwable);
+			RedisCache.LOGGER.log(Level.WARNING, "Refresh of cache '" + this.store.getConfig().getName() + "' failed", throwable);
 		}
 	}
 
@@ -181,11 +181,11 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 			return;
 		}
 
-		for (final SharedCacheListener<T> listener : this.listeners) {
+		for (final RedisCacheListener<T> listener : this.listeners) {
 			try {
 				listener.onPostUpdate(previous.get(), object);
 			} catch (final Throwable throwable) {
-				SharedCache.LOGGER.log(Level.WARNING, "Listener of cache '" + this.store.getConfig().getName() + "' failed", throwable);
+				RedisCache.LOGGER.log(Level.WARNING, "Listener of cache '" + this.store.getConfig().getName() + "' failed", throwable);
 			}
 		}
 	}
@@ -198,16 +198,16 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 	}
 
 	private void fireRemove(final @NonNull T removed) {
-		for (final SharedCacheListener<T> listener : this.listeners) {
+		for (final RedisCacheListener<T> listener : this.listeners) {
 			try {
 				listener.onPostRemove(removed);
 			} catch (final Throwable throwable) {
-				SharedCache.LOGGER.log(Level.WARNING, "Listener of cache '" + this.store.getConfig().getName() + "' failed", throwable);
+				RedisCache.LOGGER.log(Level.WARNING, "Listener of cache '" + this.store.getConfig().getName() + "' failed", throwable);
 			}
 		}
 	}
 
-	private void receive(final @NonNull SharedMessage message) {
+	private void receive(final @NonNull CacheMessage message) {
 		if (this.origin.equals(message.getOrigin())) {
 			return;
 		}
@@ -225,11 +225,11 @@ public class SharedCache<T> implements SharedStoreListener<T>, AutoCloseable {
 		this.store.parse(message.getJson()).ifPresent(this::update);
 	}
 
-	private void publish(final @NonNull SharedMessage message) {
+	private void publish(final @NonNull CacheMessage message) {
 		try {
 			this.transport.publish(message);
 		} catch (final Throwable throwable) {
-			SharedCache.LOGGER.log(Level.WARNING, "Publication of cache '" + this.store.getConfig().getName() + "' failed", throwable);
+			RedisCache.LOGGER.log(Level.WARNING, "Publication of cache '" + this.store.getConfig().getName() + "' failed", throwable);
 		}
 	}
 
