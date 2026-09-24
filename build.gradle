@@ -101,7 +101,6 @@ publishing {
 		maven(MavenPublication) {
 			artifactId = 'hestia'
 			from components.java
-			artifact shadowJar
 		}
 	}
 }
