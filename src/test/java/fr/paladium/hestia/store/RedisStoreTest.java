@@ -26,10 +26,13 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import com.google.gson.Gson;
+
 import fr.paladium.hestia.HestiaTestSupport;
 import fr.paladium.hestia.model.TestAccount;
 import fr.paladium.hestia.redis.RedisClient;
 import fr.paladium.hestia.redis.exception.RedisLockLostException;
+import fr.paladium.hestia.redis.impl.RedisCommand;
 import fr.paladium.hestia.redis.lock.RedisLockToken;
 import fr.paladium.hestia.redis.query.RedisQuery;
 import redis.clients.jedis.Jedis;
@@ -282,6 +285,19 @@ public class RedisStoreTest {
 		assertNotNull(stored);
 		assertEquals(200L, stored.getBalance());
 		assertEquals(201L, stored.getVersion());
+	}
+
+	@Test
+	public void transientFieldsAreReadButNeverStored() throws Exception {
+		final TestAccount account = new TestAccount(HestiaTestSupport.randomId());
+		account.setDescription("derived");
+		HestiaTestSupport.join(RedisStoreTest.first.save(account));
+
+		final String key = RedisStoreTest.first.getKey(account.getId());
+		assertFalse(RedisStoreTest.firstClient.<String>execute(RedisCommand.Json.get(key)).contains("description"));
+
+		RedisStoreTest.firstClient.execute(RedisCommand.Json.set(new Gson(), key, account));
+		assertEquals("derived", HestiaTestSupport.join(RedisStoreTest.second.fetch(account.getId())).getDescription());
 	}
 
 	private static TestAccount account(final long balance) throws Exception {

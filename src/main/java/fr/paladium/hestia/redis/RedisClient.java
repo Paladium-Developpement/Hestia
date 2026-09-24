@@ -14,6 +14,7 @@ import fr.paladium.hestia.redis.impl.RedisPipeline;
 import fr.paladium.hestia.redis.impl.RedisProtocol;
 import fr.paladium.hestia.redis.index.RedisIndexResolver;
 import fr.paladium.hestia.redis.json.RedisJsonSerializer;
+import fr.paladium.hestia.redis.json.RedisJsonTransientExclusionStrategy;
 import fr.paladium.hestia.redis.lock.RedisLock;
 import fr.paladium.hestia.redis.metric.RedisMetricRecorder;
 import fr.paladium.hestia.redis.metric.impl.RedisMetricAsyncRecorder;
@@ -62,7 +63,7 @@ public class RedisClient implements AutoCloseable {
 		}
 
 		this.lock = RedisLock.create(this);
-		this.jsonSerializer = RedisJsonSerializer.create(config.getGson(), config.getTypeResolver());
+		this.jsonSerializer = RedisJsonSerializer.create(config.getGson().newBuilder().addSerializationExclusionStrategy(RedisJsonTransientExclusionStrategy.INSTANCE).create(), config.getTypeResolver());
 		if (config.getMetrics() == null) {
 			this.metrics = RedisMetricNoOpRecorder.INSTANCE;
 		} else {

@@ -94,7 +94,7 @@ cache.start().join();
 | `password` | aucun | mot de passe Redis |
 | `database` | `0` | base Redis |
 | `poolSize` | `16` | connexions simultanées maximum |
-| `gson` | `new Gson()` | Gson utilisé pour lire et écrire les objets. Ajouter `RedisJsonTransientExclusionStrategy.INSTANCE` pour activer `@RedisJsonTransient`. |
+| `gson` | `new Gson()` | Gson utilisé pour lire et écrire les objets. Hestia en dérive une copie qui exclut les champs `@RedisJsonTransient` à l'écriture ; le Gson fourni n'est pas modifié. |
 | `metrics` | désactivé | envoie des métriques en TimeSeries Redis sous ce préfixe |
 | `typeResolver` | identité | donne la classe réelle d'un objet polymorphe |
 | `RedisStoreConfig.threads` | `128` | threads du store |

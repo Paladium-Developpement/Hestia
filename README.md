@@ -72,7 +72,7 @@ public class Faction {
 | `@RedisJsonVersion` | champ `long` de version, incrémenté à chaque sauvegarde. Obligatoire pour un cache. |
 | `@RedisJsonSnapshot` | champ `transient JsonElement` qui garde l'état chargé de l'objet, base du diff. Recommandé dès que plusieurs copies d'un même objet peuvent coexister. |
 | `@RedisJsonOverwrite` | la valeur est écrasée au lieu d'être envoyée en delta. À mettre sur tout nombre **affecté** (`=`) plutôt qu'**accumulé** (`+=`) : timestamp, priorité, valeur recalculée. S'applique à tout ce qui est en dessous. |
-| `@RedisJsonTransient` | le champ n'est pas écrit dans Redis (avec `RedisJsonTransientExclusionStrategy` sur le Gson). |
+| `@RedisJsonTransient` | le champ n'est pas écrit dans Redis, mais reste lu s'il y est encore et reste sérialisé partout ailleurs (paquets, copies). À la différence de `transient`, qui l'exclut de toute sérialisation. |
 | `@RedisIndex` | champ indexé par RediSearch. |
 
 ### Store
