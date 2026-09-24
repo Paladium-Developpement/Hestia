@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  NAME: Hestia
+
+jobs:
+  release:
+    name: Build, publish and release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 8 and 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            8
+            17
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Apply the tag version
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          sed -i "s/^version = '.*'/version = '${VERSION}'/" build.gradle
+      - name: Build with Gradle
+        run: chmod +x gradlew && ./gradlew build -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64
+      - name: Publish to Maven
+        env:
+          MAVEN_REPO_USER: ${{ secrets.MAVEN_REPO_USER }}
+          MAVEN_REPO_PASS: ${{ secrets.MAVEN_REPO_PASS }}
+        run: ./gradlew publish -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64
+      - name: Generate Changelog
+        run: echo "# ${{ env.NAME }} ${{ env.VERSION }}" > ${{ github.workspace }}-CHANGELOG.txt
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: ${{ github.workspace }}-CHANGELOG.txt
+          generate_release_notes: true
+          files: |
+            build/libs/hestia-${{ env.VERSION }}.jar
+            build/libs/hestia-${{ env.VERSION }}-all.jar
+            build/libs/hestia-${{ env.VERSION }}-sources.jar
+
+  version:
+    name: Update Version
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Set up Git
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+      - name: Update version in files
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          COMMIT_SHA=$(git rev-parse --short=7 HEAD)
+          sed -i "s/^version = '.*'/version = '${VERSION}'/" build.gradle
+          sed -i "s/badge\/version-[^-]*-blue/badge\/version-${VERSION} (${COMMIT_SHA})-blue/" README.md
+          sed -i "s/hestia:[0-9][0-9.]*[0-9]/hestia:${VERSION}/g; s/hestia-[0-9][0-9.]*[0-9]/hestia-${VERSION}/g" README.md INSTALLATION.md
+          git add build.gradle README.md INSTALLATION.md
+          git diff --cached --quiet || git commit -m "update: update version to ${VERSION} (🔖)"
+          git push origin HEAD:main
