@@ -7,9 +7,11 @@ on:
 
 permissions:
   contents: write
+  checks: write
 
 env:
   NAME: Hestia
+  GRADLE_ARGS: -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64
 
 jobs:
   release:
@@ -31,13 +33,23 @@ jobs:
           VERSION=${GITHUB_REF_NAME#v}
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           sed -i "s/^version = '.*'/version = '${VERSION}'/" build.gradle
-      - name: Build with Gradle
-        run: chmod +x gradlew && ./gradlew build -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64
+      - name: Unit tests
+        run: chmod +x gradlew && ./gradlew test $GRADLE_ARGS
+      - name: Integration tests
+        run: ./gradlew integrationTest $GRADLE_ARGS
+      - name: Test report
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: build/test-results/**/*.xml
+          check_name: Release test report
+      - name: Build
+        run: ./gradlew assemble $GRADLE_ARGS
       - name: Publish to Maven
         env:
           MAVEN_REPO_USER: ${{ secrets.MAVEN_REPO_USER }}
           MAVEN_REPO_PASS: ${{ secrets.MAVEN_REPO_PASS }}
-        run: ./gradlew publish -Porg.gradle.java.installations.fromEnv=JAVA_HOME_8_X64
+        run: ./gradlew publish $GRADLE_ARGS
       - name: Generate Changelog
         run: echo "# ${{ env.NAME }} ${{ env.VERSION }}" > ${{ github.workspace }}-CHANGELOG.txt
       - name: Release

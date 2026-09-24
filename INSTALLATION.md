@@ -81,10 +81,10 @@ final RedisClient client = RedisClient.create(RedisConfig.create("127.0.0.1")
     .metrics(RedisMetricConfig.create("faction"))
     .typeResolver(JsonBindingAdapterFactory::resolve));
 
-final SharedStore<Faction> factions = SharedStore.create(client, SharedStoreConfig.create(Faction.class, faction -> faction.getUuid().toString()));
+final RedisStore<Faction> factions = RedisStore.create(client, RedisStoreConfig.create(Faction.class, faction -> faction.getUuid().toString()));
 factions.index();
 
-final SharedCache<Faction> cache = SharedCache.create(factions, SharedCacheConfig.create());
+final RedisCache<Faction> cache = RedisCache.create(factions, RedisCacheConfig.create());
 cache.start().join();
 ```
 
@@ -97,13 +97,13 @@ cache.start().join();
 | `gson` | `new Gson()` | Gson utilisé pour lire et écrire les objets. Ajouter `RedisJsonTransientExclusionStrategy.INSTANCE` pour activer `@RedisJsonTransient`. |
 | `metrics` | désactivé | envoie des métriques en TimeSeries Redis sous ce préfixe |
 | `typeResolver` | identité | donne la classe réelle d'un objet polymorphe |
-| `SharedStoreConfig.threads` | `128` | threads du store |
-| `SharedStoreConfig.batchSize` | `100` | documents par `JSON.MGET` |
-| `SharedStoreConfig.flushInterval` | `50 ms` | fréquence de regroupement des lectures |
-| `SharedStoreConfig.patchAttempts` | `5` | tentatives d'un patch en cas d'erreur transitoire |
-| `SharedStoreConfig.keyFilter` | id sans `:` | clés prises en compte par `fetchAll` et `fetchVersions` |
-| `SharedCacheConfig.refreshInterval` | `1 min` | rafraîchissement incrémental du cache |
-| `SharedCacheConfig.transport` | pub/sub Redis | transport de synchronisation entre services |
+| `RedisStoreConfig.threads` | `128` | threads du store |
+| `RedisStoreConfig.batchSize` | `100` | documents par `JSON.MGET` |
+| `RedisStoreConfig.flushInterval` | `50 ms` | fréquence de regroupement des lectures |
+| `RedisStoreConfig.patchAttempts` | `5` | tentatives d'un patch en cas d'erreur transitoire |
+| `RedisStoreConfig.keyFilter` | id sans `:` | clés prises en compte par `fetchAll` et `fetchVersions` |
+| `RedisCacheConfig.refreshInterval` | `1 min` | rafraîchissement incrémental du cache |
+| `RedisCacheConfig.transport` | pub/sub Redis | transport de synchronisation entre services |
 
 À l'arrêt, fermer dans l'ordre : `cache.close()`, `factions.close()`, `client.close()`.
 
@@ -131,5 +131,5 @@ gradlew build
 ```
 
 - Gradle tourne en Java 17 et compile en Java 8. Si le JDK 8 local n'est pas détecté, ajouter `-Porg.gradle.java.installations.paths=<chemin du JDK 8>`. Sinon Gradle le télécharge.
-- Les tests d'intégration démarrent `redis:8.6.2` via Testcontainers : Docker doit tourner.
+- `gradlew test` lance les tests unitaires, sans Docker. `gradlew integrationTest` démarre `redis:8.6.2` via Testcontainers : Docker doit tourner.
 - `gradlew eclipse` génère le projet Eclipse.

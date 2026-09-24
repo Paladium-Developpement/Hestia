@@ -39,12 +39,32 @@ tasks.withType(JavaCompile).configureEach {
 	options.encoding = 'UTF-8'
 }
 
-test {
-	useJUnitPlatform()
+tasks.withType(Test).configureEach {
 	testLogging {
 		events 'failed'
 		exceptionFormat 'full'
 	}
+}
+
+test {
+	useJUnitPlatform {
+		excludeTags 'integration'
+	}
+}
+
+tasks.register('integrationTest', Test) {
+	description = 'Runs the tests against a real Redis started with Testcontainers.'
+	group = 'verification'
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	shouldRunAfter test
+	useJUnitPlatform {
+		includeTags 'integration'
+	}
+}
+
+check {
+	dependsOn integrationTest
 }
 
 shadowJar {

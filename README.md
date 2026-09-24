@@ -78,7 +78,7 @@ public class Faction {
 ### Store
 
 ```java
-final SharedStore<Faction> factions = SharedStore.create(client, SharedStoreConfig.create(Faction.class, faction -> faction.getUuid().toString()));
+final RedisStore<Faction> factions = RedisStore.create(client, RedisStoreConfig.create(Faction.class, faction -> faction.getUuid().toString()));
 
 factions.save(faction);
 factions.fetch(uuid.toString());
@@ -89,19 +89,19 @@ factions.delete(faction);
 
 Les clés sont `faction:<id>` (le nom du store vient de la classe, en minuscules). Les lectures sont regroupées et dédupliquées toutes les 50 ms, chaque appelant reçoit sa propre instance. Les écritures d'une même clé sont exécutées dans l'ordre.
 
-Les listeners (`SharedStoreListener`) permettent d'annuler une sauvegarde (`onPreSave`), d'initialiser un objet chargé (`onPostLoad`) ou de réagir après écriture (`onPostSave`, `onPostDelete`).
+Les listeners (`RedisStoreListener`) permettent d'annuler une sauvegarde (`onPreSave`), d'initialiser un objet chargé (`onPostLoad`) ou de réagir après écriture (`onPostSave`, `onPostDelete`).
 
 ### Cache
 
 ```java
-final SharedCache<Faction> cache = SharedCache.create(factions, SharedCacheConfig.create());
+final RedisCache<Faction> cache = RedisCache.create(factions, RedisCacheConfig.create());
 cache.start().join();
 
 cache.get(uuid.toString());
 cache.getAll();
 ```
 
-Les valeurs du cache sont en lecture seule : pour modifier un objet, le relire avec `store.fetch` puis le sauvegarder. Les listeners (`SharedCacheListener`) sont notifiés après chaque mise à jour (`onPostUpdate`) ou suppression (`onPostRemove`).
+Les valeurs du cache sont en lecture seule : pour modifier un objet, le relire avec `store.fetch` puis le sauvegarder. Les listeners (`RedisCacheListener`) sont notifiés après chaque mise à jour (`onPostUpdate`) ou suppression (`onPostRemove`).
 
 ### Verrous
 
@@ -116,22 +116,22 @@ Passer le `token` à `save` active le fencing : si le verrou a expiré entre-tem
 
 ## Transport
 
-Le cache ne dépend d'aucun système de messagerie : il publie et reçoit des `SharedMessage` (`id`, `json`, `version`, `origin`) à travers l'interface `SharedTransport`.
+Le cache ne dépend d'aucun système de messagerie : il publie et reçoit des `CacheMessage` (`id`, `json`, `version`, `origin`) à travers l'interface `CacheTransport`.
 
 ```java
-public interface SharedTransport extends AutoCloseable {
+public interface CacheTransport extends AutoCloseable {
 
     public void close();
-    public void publish(final @NonNull SharedMessage message);
-    public void subscribe(final @NonNull Consumer<SharedMessage> consumer);
+    public void publish(final @NonNull CacheMessage message);
+    public void subscribe(final @NonNull Consumer<CacheMessage> consumer);
 
 }
 ```
 
-Sans configuration, `RedisSharedTransport` utilise le pub/sub Redis sur le canal `<store>:sync`. Pour passer par RabbitMQ ou un autre bus, il suffit d'implémenter l'interface et de la donner au cache :
+Sans configuration, `RedisCacheTransport` utilise le pub/sub Redis sur le canal `<store>:sync`. Pour passer par RabbitMQ ou un autre bus, il suffit d'implémenter l'interface et de la donner au cache :
 
 ```java
-SharedCache.create(factions, SharedCacheConfig.create().transport(new RabbitSharedTransport(network)));
+RedisCache.create(factions, RedisCacheConfig.create().transport(new RabbitCacheTransport(network)));
 ```
 
 Un message dont la `json` est `null` signifie une suppression. Les messages émis par le cache lui-même sont ignorés grâce à `origin`.
@@ -139,14 +139,15 @@ Un message dont la `json` est `null` signifie une suppression. Les messages émi
 ## Build
 
 ```sh
-gradlew build         # Compile, teste et construit les jars dans build/libs.
-gradlew test          # Lance les tests (Docker requis, Redis 8 via Testcontainers).
-gradlew publish       # Met en ligne sur repository.palagitium.dev
+gradlew test              # Tests unitaires, sans Redis ni Docker.
+gradlew integrationTest   # Tests d'intégration contre Redis 8 (Docker requis, via Testcontainers).
+gradlew build             # Les deux, puis les jars dans build/libs.
+gradlew publish           # Met en ligne sur repository.palagitium.dev
 ```
 
 ## Release
 
-Chaque push lance le workflow `Build` (compilation et tests). Pour publier une version, créer une release GitHub avec un tag `vX.Y.Z` : le workflow `Release` construit les jars avec cette version, les publie sur l'Artifactory, les attache à la release puis met à jour la version dans `build.gradle`, `README.md` et `INSTALLATION.md` sur `main`.
+Chaque push lance le workflow `Build` : tests unitaires, tests d'intégration, construction des jars, avec un rapport de tests dans l'onglet Checks. Pour publier une version, créer une release GitHub avec un tag `vX.Y.Z` : le workflow `Release` rejoue les deux suites de tests, construit les jars avec cette version, les publie sur l'Artifactory, les attache à la release puis met à jour la version dans `build.gradle`, `README.md` et `INSTALLATION.md` sur `main`.
 
 Secrets requis sur le repo : `MAVEN_REPO_USER` et `MAVEN_REPO_PASS`.
 
