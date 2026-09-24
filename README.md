@@ -3,7 +3,7 @@
 # Hestia
 
 <div align="center">
-  <img align="center" src="https://img.shields.io/badge/version-1.0.0-blue">
+  <img align="center" src="https://img.shields.io/badge/version-1.0.0 (3b80a25)-blue">
   <img align="center" src="https://img.shields.io/badge/java-8+-blue">
   <img align="center" src="https://img.shields.io/badge/redis-8 (JSON + Search)-red">
   <img align="center" src="https://img.shields.io/maintenance/yes/9999">
@@ -15,7 +15,7 @@ Shared Object Storage pour services Java parallèles, adossé à Redis.
 <br><br>
 Patchs atomiques et idempotents, caches synchronisés versionnés et verrous distribués. Aucune dépendance Minecraft.
 
-[Principe](#principe) • [Gradle](#gradle) • [Serveur Minecraft](#serveur-minecraft) • [Utilisation](#utilisation) • [Build](#build)
+[Principe](#principe) • [Installation](INSTALLATION.md) • [Utilisation](#utilisation) • [Transport](#transport) • [Build](#build)
 
 </div>
 
@@ -31,42 +31,9 @@ Hestia stocke des objets Java complexes en JSON dans Redis et permet à plusieur
 - **Caches synchronisés** : chaque service garde une copie locale, tenue à jour par pub/sub (ou le transport de votre choix) et réparée par un rafraîchissement périodique incrémental.
 - **Verrous avec fencing** : une écriture faite sous un verrou expiré est refusée par Redis lui-même.
 
-## Gradle
+## Installation
 
-```gradle
-repositories {
-    maven {
-        url = "http://repository.palagitium.dev/artifactory/Paladium-DEVENV"
-        credentials {
-            username = System.getenv('MAVEN_REPO_USER') ?: project.findProperty('MAVEN_REPO_USER')
-            password = System.getenv('MAVEN_REPO_PASS') ?: project.findProperty('MAVEN_REPO_PASS')
-        }
-    }
-}
-
-dependencies {
-    compile "fr.paladium:hestia:1.0.0"
-}
-```
-
-Deux jars sont publiés :
-
-| Jar | Contenu | Usage |
-|---|---|---|
-| `hestia-1.0.0.jar` | Hestia seule, dépendances Maven classiques | services Java standards |
-| `hestia-1.0.0-all.jar` | Hestia + Jedis, commons-pool, org.json, slf4j, reflections (relocalisés sous `fr.paladium.hestia.libs`) | serveurs Minecraft |
-
-Gson n'est jamais embarqué : il est fourni par l'environnement (2.8.6 minimum).
-
-## Serveur Minecraft
-
-Hestia n'est **pas** un mod. Le jar `-all` se place dans `libraries/` et s'ajoute au classpath de lancement :
-
-```sh
-java -cp "forge.jar:libraries/hestia-1.0.0-all.jar" net.minecraft.launchwrapper.Launch --tweakClass cpw.mods.fml.common.launcher.FMLServerTweaker
-```
-
-Sous Windows, le séparateur est `;`. Hestia doit être présente avant de déployer un mod qui l'utilise.
+Voir [INSTALLATION.md](INSTALLATION.md) : dépendance Gradle, installation sur un serveur Minecraft, configuration et dépannage.
 
 ## Utilisation
 
@@ -114,15 +81,15 @@ public class Faction {
 final SharedStore<Faction> factions = SharedStore.create(client, SharedStoreConfig.create(Faction.class, faction -> faction.getUuid().toString()));
 
 factions.save(faction);
-factions.get(uuid.toString());
-factions.getAll();
-factions.findOne("@name:{paladium}");
+factions.fetch(uuid.toString());
+factions.fetchAll();
+factions.find("@name:{paladium}");
 factions.delete(faction);
 ```
 
 Les clés sont `faction:<id>` (le nom du store vient de la classe, en minuscules). Les lectures sont regroupées et dédupliquées toutes les 50 ms, chaque appelant reçoit sa propre instance. Les écritures d'une même clé sont exécutées dans l'ordre.
 
-Les listeners (`SharedStoreListener`) permettent d'annuler une sauvegarde (`onPreSave`), d'initialiser un objet chargé (`onLoad`) ou de réagir après écriture (`onPostSave`, `onPostDelete`).
+Les listeners (`SharedStoreListener`) permettent d'annuler une sauvegarde (`onPreSave`), d'initialiser un objet chargé (`onPostLoad`) ou de réagir après écriture (`onPostSave`, `onPostDelete`).
 
 ### Cache
 
@@ -134,18 +101,40 @@ cache.get(uuid.toString());
 cache.getAll();
 ```
 
-Les valeurs du cache sont en lecture seule : pour modifier un objet, le relire avec `store.get` puis le sauvegarder. Par défaut la synchronisation passe par le pub/sub Redis (`faction:sync`). Un autre transport (RabbitMQ…) s'implémente avec `SharedCacheTransport`.
+Les valeurs du cache sont en lecture seule : pour modifier un objet, le relire avec `store.fetch` puis le sauvegarder. Les listeners (`SharedCacheListener`) sont notifiés après chaque mise à jour (`onPostUpdate`) ou suppression (`onPostRemove`).
 
 ### Verrous
 
 ```java
-client.getLock().withLockWaiting("faction:bank:" + uuid, token -> factions.get(id).thenCompose(faction -> {
+client.getLock().withLockWaiting("faction:bank:" + uuid, token -> factions.fetch(id).thenCompose(faction -> {
     faction.setBalance(faction.getBalance() - amount);
     return factions.save(faction, token);
 }));
 ```
 
 Passer le `token` à `save` active le fencing : si le verrou a expiré entre-temps, l'écriture est refusée (`RedisLockLostException`).
+
+## Transport
+
+Le cache ne dépend d'aucun système de messagerie : il publie et reçoit des `SharedMessage` (`id`, `json`, `version`, `origin`) à travers l'interface `SharedTransport`.
+
+```java
+public interface SharedTransport extends AutoCloseable {
+
+    public void close();
+    public void publish(final @NonNull SharedMessage message);
+    public void subscribe(final @NonNull Consumer<SharedMessage> consumer);
+
+}
+```
+
+Sans configuration, `RedisSharedTransport` utilise le pub/sub Redis sur le canal `<store>:sync`. Pour passer par RabbitMQ ou un autre bus, il suffit d'implémenter l'interface et de la donner au cache :
+
+```java
+SharedCache.create(factions, SharedCacheConfig.create().transport(new RabbitSharedTransport(network)));
+```
+
+Un message dont la `json` est `null` signifie une suppression. Les messages émis par le cache lui-même sont ignorés grâce à `origin`.
 
 ## Build
 
@@ -154,5 +143,11 @@ gradlew build         # Compile, teste et construit les jars dans build/libs.
 gradlew test          # Lance les tests (Docker requis, Redis 8 via Testcontainers).
 gradlew publish       # Met en ligne sur repository.palagitium.dev
 ```
+
+## Release
+
+Chaque push lance le workflow `Build` (compilation et tests). Pour publier une version, créer une release GitHub avec un tag `vX.Y.Z` : le workflow `Release` construit les jars avec cette version, les publie sur l'Artifactory, les attache à la release puis met à jour la version dans `build.gradle`, `README.md` et `INSTALLATION.md` sur `main`.
+
+Secrets requis sur le repo : `MAVEN_REPO_USER` et `MAVEN_REPO_PASS`.
 
 Le projet cible Java 8. Si Gradle ne trouve pas de JDK 8 local, il le télécharge automatiquement ; sinon, indiquer son chemin avec `-Porg.gradle.java.installations.paths=<chemin>`.
