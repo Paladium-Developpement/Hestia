@@ -19,6 +19,19 @@ repositories {
 	mavenCentral()
 }
 
+sourceSets {
+	bench {
+		compileClasspath += sourceSets.main.output
+		runtimeClasspath += sourceSets.main.output
+	}
+}
+
+configurations {
+	benchCompileOnly.extendsFrom compileOnly
+	benchImplementation.extendsFrom implementation
+	benchAnnotationProcessor.extendsFrom annotationProcessor
+}
+
 dependencies {
 	api 'com.google.code.gson:gson:2.8.9'
 	implementation 'redis.clients:jedis:4.2.3'
@@ -33,6 +46,8 @@ dependencies {
 	testCompileOnly 'org.projectlombok:lombok:1.18.34'
 	testAnnotationProcessor 'org.projectlombok:lombok:1.18.34'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+	benchImplementation 'org.testcontainers:testcontainers:1.21.4'
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -65,6 +80,14 @@ tasks.register('integrationTest', Test) {
 
 check {
 	dependsOn integrationTest
+}
+
+tasks.register('bench', JavaExec) {
+	description = 'Runs the benchmarks against a real Redis started with Testcontainers.'
+	group = 'verification'
+	classpath = sourceSets.bench.runtimeClasspath
+	mainClass = 'fr.paladium.hestia.bench.HestiaBenchmark'
+	javaLauncher = javaToolchains.launcherFor(java.toolchain)
 }
 
 shadowJar {
