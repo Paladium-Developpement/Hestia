@@ -11,9 +11,9 @@
 
 <br>
 
-Stockez des objets Java dans Redis, partagés entre autant de processus que vous voulez, sans jamais penser à l'atomicité.
+Stockez des objets Java dans Redis, partagés entre autant de processus que vous voulez : plus rapide que Redis utilisé à la main, et sans jamais perdre une écriture.
 <br><br>
-Écritures atomiques et idempotentes, fusion automatique des modifications concurrentes, caches locaux synchronisés, verrous distribués.
+Écritures atomiques, fusion automatique des modifications concurrentes, caches locaux synchronisés, verrous distribués.
 
 [Pourquoi](#pourquoi) • [Bench](#bench) • [Utilisation](#utilisation) • [Build](#build)
 
@@ -21,11 +21,12 @@ Stockez des objets Java dans Redis, partagés entre autant de processus que vous
 
 ## Pourquoi
 
-Vous modifiez vos objets Java normalement, vous appelez `save`, et Hestia s'occupe du reste :
+Vous modifiez vos objets Java normalement, vous appelez `save`, et Hestia s'occupe du reste, plus vite qu'à la main :
 
+- **3,6× plus d'écritures et 2,7× plus de lectures** qu'avec des `JSON.SET` / `JSON.GET` classiques.
+- **15× moins de CPU Redis** : seul ce qui change part sur le réseau, pas l'objet entier.
 - **Aucune écriture perdue** : les modifications de plusieurs processus fusionnent au lieu de s'écraser.
-- **Atomique et idempotent** : jamais d'état à moitié écrit, jamais de double application sur un retry.
-- **Seul ce qui change part sur le réseau**, pas l'objet entier.
+- **Atomique** : jamais d'état à moitié écrit, même en cas de coupure.
 - **Caches locaux synchronisés** entre tous les processus.
 - **Verrous distribués** qui refusent toute écriture une fois expirés.
 
@@ -173,9 +174,3 @@ gradlew publish           # Publication sur le dépôt Maven.
 ```
 
 Gradle tourne en Java 17 et compile en Java 8. Si le JDK 8 local n'est pas détecté, ajouter `-Porg.gradle.java.installations.paths=<chemin du JDK 8>`, sinon Gradle le télécharge.
-
-## Release
-
-Chaque push lance le workflow `Build` : tests unitaires, tests d'intégration, construction et vérification de la publication, avec un rapport de tests dans l'onglet Checks.
-
-Pour publier une version, créer une release GitHub avec un tag `vX.Y.Z`. Le workflow `Release` rejoue les deux suites de tests, construit les jars avec cette version, les publie, les attache à la release puis met à jour la version dans `build.gradle` et `README.md` sur `main`. Secrets requis : `MAVEN_REPO_USER` et `MAVEN_REPO_PASS`.
