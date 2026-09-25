@@ -21,31 +21,24 @@ Stockez des objets Java dans Redis, partagés entre autant de processus que vous
 
 ## Pourquoi
 
-Partager un objet entre plusieurs processus avec Redis, c'est d'habitude choisir entre deux maux :
+Vous modifiez vos objets Java normalement, vous appelez `save`, et Hestia s'occupe du reste :
 
-- **Relire, modifier, réécrire tout l'objet.** Simple, mais deux processus qui écrivent en même temps s'écrasent : une des deux modifications est perdue, sans erreur. Et chaque écriture renvoie tout l'objet, que Redis doit reparser en entier.
-- **`WATCH` / `MULTI` ou un verrou autour de chaque écriture.** Correct, mais chaque conflit oblige à tout relire et tout renvoyer, et le débit s'effondre dès que plusieurs écrivains visent le même objet.
-
-Hestia supprime ce choix. Vous modifiez vos objets Java normalement et vous appelez `save` :
-
-- **Seul ce qui a changé part sur le réseau.** L'objet est comparé à l'état dans lequel il a été lu, et Hestia n'envoie que la différence.
-- **Les modifications concurrentes fusionnent au lieu de s'écraser.** Les nombres partent en delta exact (`+100`, `-30`), les listes de valeurs sont fusionnées élément par élément, les champs marqués `@RedisJsonOverwrite` gardent la dernière valeur écrite.
-- **Chaque écriture est atomique.** Le patch est appliqué par un seul script Lua, vérifié entièrement avant d'écrire : jamais d'état à moitié écrit, y compris quand Redis manque de mémoire.
-- **Chaque écriture est idempotente.** Un retry après une coupure réseau ne s'applique jamais deux fois.
-- **Les échanges sont regroupés automatiquement.** Les lectures simultanées partent dans un même pipeline, deux lectures du même objet n'en font qu'une, et les écritures partent en parallèle sur le pool de connexions, groupées en pipeline quand il est saturé.
-- **Les caches locaux restent à jour.** Chaque processus peut garder une copie en mémoire, mise à jour après chaque écriture, versionnée pour ne jamais revenir en arrière, et réparée par un rafraîchissement incrémental.
-- **Un verrou expiré ne peut plus écrire.** Une écriture faite sous un verrou perdu est refusée par Redis lui-même.
+- **Aucune écriture perdue** : les modifications de plusieurs processus fusionnent au lieu de s'écraser.
+- **Atomique et idempotent** : jamais d'état à moitié écrit, jamais de double application sur un retry.
+- **Seul ce qui change part sur le réseau**, pas l'objet entier.
+- **Caches locaux synchronisés** entre tous les processus.
+- **Verrous distribués** qui refusent toute écriture une fois expirés.
 
 ## Bench
 
-Comparé à l'usage classique de Redis (relire puis réécrire l'objet avec `JSON.SET`) :
-
-| | Sans Hestia | Avec Hestia |
+| Mesure | Redis classique | Hestia |
 |---|---|---|
-| 8 écrivains simultanés sur le même objet | **86 % des écritures perdues** | **0 perte**, 4× plus rapide que `WATCH` / `MULTI` |
-| Données envoyées pour changer un champ | 16 Ko | **164 octets** |
+| Écritures perdues (8 écrivains, même objet) | 1 725 / 2 000 | **0 / 2 000** |
+| Débit sans perte (8 écrivains, même objet) | 992 ops/s | **3 808 ops/s** |
+| Données envoyées par écriture | 16,2 Ko | **164 o** |
 | CPU Redis par écriture (objet de 130 Ko) | 739 µs | **49 µs** |
-| 16 écrivains en continu | Redis saturé à 92 % | **3,6× plus d'écritures**, Redis à 20 % |
+| Débit (16 écrivains, objets de 130 Ko) | 1 037 ops/s | **3 750 ops/s** |
+| CPU Redis occupé (16 écrivains) | 92 % | **20 %** |
 | Lecture de 2 000 objets | 35 716 ops/s | **97 974 ops/s** |
 
 ## Utilisation
