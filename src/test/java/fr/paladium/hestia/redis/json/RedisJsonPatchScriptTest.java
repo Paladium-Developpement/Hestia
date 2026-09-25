@@ -105,6 +105,17 @@ public class RedisJsonPatchScriptTest {
 	}
 
 	@Test
+	public void mergedDocumentIsOnlyReturnedOnDemand() {
+		final String key = RedisJsonPatchScriptTest.document("{\"balance\":10}");
+		final List<Object> silent = RedisJsonPatchScriptTest.client.execute(RedisJsonPatch.create(key, RedisJsonPatchScriptTest.GSON).increment("$.balance", "$", "1", new JsonPrimitive(11)).toCommand());
+		final List<Object> merged = RedisJsonPatchScriptTest.client.execute(RedisJsonPatch.create(key, RedisJsonPatchScriptTest.GSON).increment("$.balance", "$", "1", new JsonPrimitive(12)).merged(true).toCommand());
+
+		assertEquals(1, silent.size());
+		assertEquals(2, merged.size());
+		assertEquals(12L, RedisJsonPatchScriptTest.read(key).get("balance").getAsLong());
+	}
+
+	@Test
 	public void vanishedPathsFallBackToTheTargetValue() {
 		final String key = RedisJsonPatchScriptTest.document("{\"counters\":{}}");
 		final RedisJsonPatch patch = RedisJsonPatch.create(key, RedisJsonPatchScriptTest.GSON)

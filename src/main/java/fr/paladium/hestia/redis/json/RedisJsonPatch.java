@@ -1,5 +1,8 @@
 package fr.paladium.hestia.redis.json;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -25,7 +28,10 @@ public final class RedisJsonPatch {
 	private static final String SCRIPT = String.join("\n",
 		"local doc, marker, guard = KEYS[1], KEYS[2], KEYS[3]",
 		"if redis.call('EXISTS', marker) == 1 then",
-		"	return {0, redis.call('JSON.GET', doc)}",
+		"	if ARGV[3] == '1' then",
+		"		return {0, redis.call('JSON.GET', doc)}",
+		"	end",
+		"	return {0}",
 		"end",
 		"if guard and redis.call('GET', guard) ~= ARGV[2] then",
 		"	return {-1}",
@@ -39,8 +45,8 @@ public final class RedisJsonPatch {
 		"end",
 		"local exists = redis.call('EXISTS', doc) == 1",
 		"local plan = {}",
-		"local index = 4",
-		"for _ = 1, tonumber(ARGV[3]) do",
+		"local index = 5",
+		"for _ = 1, tonumber(ARGV[4]) do",
 		"	local op, path, parent, first, second = ARGV[index], ARGV[index + 1], ARGV[index + 2], ARGV[index + 3], ARGV[index + 4]",
 		"	index = index + 5",
 		"	if op == 'S' then",
@@ -92,14 +98,20 @@ public final class RedisJsonPatch {
 		"		end",
 		"	end",
 		"end",
-		"return {1, redis.call('JSON.GET', doc)}"
+		"if ARGV[3] == '1' then",
+		"	return {1, redis.call('JSON.GET', doc)}",
+		"end",
+		"return {1}"
 	);
+
+	private static final String SHA = RedisJsonPatch.sha1(RedisJsonPatch.SCRIPT);
 
 	private final Gson gson;
 	private final String key;
 	private final String id = UUID.randomUUID().toString();
 	private final List<String> operations = new ArrayList<>();
 
+	private boolean merged;
 	private RedisLockToken guard;
 
 	private RedisJsonPatch(final @NonNull String key, final @NonNull Gson gson) {
@@ -121,18 +133,16 @@ public final class RedisJsonPatch {
 	}
 
 	public @NonNull RedisCommand toCommand() {
-		final List<String> arguments = new ArrayList<>(this.operations.size() + 6);
-		arguments.add(this.key);
-		arguments.add(this.getMarker());
-		if (this.guard != null) {
-			arguments.add(this.guard.getKey());
-		}
+		return RedisCommand.Base.eval(RedisJsonPatch.SCRIPT, this.guard == null ? 2 : 3, this.arguments());
+	}
 
-		arguments.add(RedisJsonPatch.MARKER_TTL_SECONDS);
-		arguments.add(this.guard == null ? "" : this.guard.getToken());
-		arguments.add(String.valueOf(this.size()));
-		arguments.addAll(this.operations);
-		return RedisCommand.Base.eval(RedisJsonPatch.SCRIPT, this.guard == null ? 2 : 3, arguments.toArray(new String[0]));
+	public @NonNull RedisCommand toShaCommand() {
+		return RedisCommand.Base.evalsha(RedisJsonPatch.SHA, this.guard == null ? 2 : 3, this.arguments());
+	}
+
+	public @NonNull RedisJsonPatch merged(final boolean merged) {
+		this.merged = merged;
+		return this;
 	}
 
 	public @NonNull RedisJsonPatch delete(final @NonNull String path) {
@@ -160,6 +170,22 @@ public final class RedisJsonPatch {
 		return this.add("A", path, parent, this.gson.toJson(element), this.gson.toJson(target));
 	}
 
+	private @NonNull String[] arguments() {
+		final List<String> arguments = new ArrayList<>(this.operations.size() + 6);
+		arguments.add(this.key);
+		arguments.add(this.getMarker());
+		if (this.guard != null) {
+			arguments.add(this.guard.getKey());
+		}
+
+		arguments.add(RedisJsonPatch.MARKER_TTL_SECONDS);
+		arguments.add(this.guard == null ? "" : this.guard.getToken());
+		arguments.add(this.merged ? "1" : "0");
+		arguments.add(String.valueOf(this.size()));
+		arguments.addAll(this.operations);
+		return arguments.toArray(new String[0]);
+	}
+
 	private @NonNull RedisJsonPatch add(final @NonNull String op, final @NonNull String path, final @NonNull String parent, final @NonNull String first, final @NonNull String second) {
 		this.operations.add(op);
 		this.operations.add(path);
@@ -167,6 +193,18 @@ public final class RedisJsonPatch {
 		this.operations.add(first);
 		this.operations.add(second);
 		return this;
+	}
+
+	private static @NonNull String sha1(final @NonNull String script) {
+		try {
+			final StringBuilder builder = new StringBuilder();
+			for (final byte value : MessageDigest.getInstance("SHA-1").digest(script.getBytes(StandardCharsets.UTF_8))) {
+				builder.append(String.format("%02x", value));
+			}
+			return builder.toString();
+		} catch (final NoSuchAlgorithmException exception) {
+			throw new IllegalStateException(exception);
+		}
 	}
 
 }

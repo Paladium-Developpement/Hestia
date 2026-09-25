@@ -1,6 +1,7 @@
 package fr.paladium.hestia.store;
 
 import java.lang.reflect.Field;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -12,15 +13,16 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
-import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -37,24 +39,27 @@ import fr.paladium.hestia.redis.json.RedisJsonPatch;
 import fr.paladium.hestia.redis.json.RedisJsonSerializeResult;
 import fr.paladium.hestia.redis.json.RedisJsonSerializer;
 import fr.paladium.hestia.redis.lock.RedisLockToken;
+import fr.paladium.hestia.redis.metric.RedisMetricRecorder;
 import fr.paladium.hestia.redis.query.RedisQuery;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
+import redis.clients.jedis.exceptions.JedisDataException;
 
 public class RedisStore<T> implements AutoCloseable {
 
 	private static final Logger LOGGER = Logger.getLogger(RedisStore.class.getName());
 	private static final String DELETE_SCRIPT = "if redis.call('GET', KEYS[2]) ~= ARGV[1] then return -1 end return redis.call('DEL', KEYS[1])";
 
+	private final Batcher reads;
 	private final String prefix;
+	private final Batcher writes;
+	private final boolean snapshotted;
 	private final ExecutorService executor;
 	@Getter private final String versionPath;
 	@Getter private final RedisClient client;
-	private final ScheduledExecutorService scheduler;
 	@Getter private final RedisStoreConfig<T> config;
 
-	private final Queue<Request> queue = new ConcurrentLinkedQueue<>();
 	private final Map<String, Request> requests = new ConcurrentHashMap<>();
 	private final List<RedisStoreListener<T>> listeners = new CopyOnWriteArrayList<>();
 	private final Map<String, CompletableFuture<Void>> operations = new ConcurrentHashMap<>();
@@ -66,11 +71,9 @@ public class RedisStore<T> implements AutoCloseable {
 		this.prefix = config.getName() + ":";
 		this.versionPath = versionField == null ? null : RedisCommand.ROOT_PATH + "." + versionField.getName();
 		this.executor = RedisStore.createExecutor(config);
-		this.scheduler = RedisStore.createScheduler(config);
-		if (!config.getFlushInterval().isZero() && !config.getFlushInterval().isNegative()) {
-			final long intervalMs = config.getFlushInterval().toMillis();
-			this.scheduler.scheduleAtFixedRate(this::safeFlush, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
-		}
+		this.snapshotted = RedisJsonSerializer.resolveSnapshotField(config.getType()) != null;
+		this.reads = new Batcher("read", config.getReadFlushInterval(), false);
+		this.writes = new Batcher("write", config.getWriteFlushInterval(), true);
 	}
 
 	public static @NonNull <T> RedisStore<T> create(final @NonNull RedisClient client, final @NonNull RedisStoreConfig<T> config) {
@@ -79,8 +82,8 @@ public class RedisStore<T> implements AutoCloseable {
 
 	@Override
 	public void close() {
-		this.scheduler.shutdownNow();
-		this.flush();
+		this.reads.close();
+		this.writes.close();
 		this.executor.shutdown();
 		try {
 			this.executor.awaitTermination(30L, TimeUnit.SECONDS);
@@ -90,31 +93,8 @@ public class RedisStore<T> implements AutoCloseable {
 	}
 
 	public void flush() {
-		final List<Request> batch = new ArrayList<>();
-		Request request;
-		while ((request = this.queue.poll()) != null) {
-			batch.add(request);
-			if (request.getKey() != null) {
-				this.requests.remove(request.getKey(), request);
-			}
-		}
-
-		if (batch.isEmpty()) {
-			return;
-		}
-
-		this.client.getMetrics().gauge(this.metric("flush.size")).set(batch.size());
-		this.client.getMetrics().counter(this.metric("flush.total")).increment();
-		CompletableFuture.runAsync(() -> this.client.getMetrics().timer(this.metric("flush.latency")).record(() -> this.execute(batch)), this.executor).whenComplete((result, error) -> {
-			if (error == null) {
-				return;
-			}
-
-			this.client.getMetrics().counter(this.metric("flush.failed")).increment();
-			for (final Request failed : batch) {
-				failed.getFuture().completeExceptionally(error);
-			}
-		});
+		this.reads.drainNow();
+		this.writes.drainNow();
 	}
 
 	public boolean index() {
@@ -238,7 +218,7 @@ public class RedisStore<T> implements AutoCloseable {
 		}
 
 		this.client.getMetrics().counter(this.metric("save.total")).increment();
-		return this.chain(key, () -> this.doSave(object, key, captured, token));
+		return this.chain(this.lane(key, object), () -> this.doSave(object, key, captured, token));
 	}
 
 	public @NonNull CompletableFuture<Void> delete(final @NonNull T object, final RedisLockToken token) {
@@ -252,19 +232,20 @@ public class RedisStore<T> implements AutoCloseable {
 
 		this.client.getMetrics().counter(this.metric("delete.total")).increment();
 		final String key = this.getKey(this.getId(object));
-		return this.chain(key, () -> this.doDelete(object, key, token));
+		return this.chain(this.lane(key, object), () -> this.doDelete(object, key, token));
 	}
 
 	public @NonNull <R> CompletableFuture<R> queue(final String key, final @NonNull RedisCommand command) {
 		return this.submit(key, command).thenApply(command::parseResponse);
 	}
 
-	private void safeFlush() {
-		try {
-			this.flush();
-		} catch (final Throwable throwable) {
-			RedisStore.LOGGER.log(Level.WARNING, "Flush of store '" + this.config.getName() + "' failed", throwable);
+	private boolean isMergedRequired() {
+		for (final RedisStoreListener<T> listener : this.listeners) {
+			if (listener.requiresMergedDocument()) {
+				return true;
+			}
 		}
+		return false;
 	}
 
 	private @NonNull List<String> scanKeys() {
@@ -300,22 +281,23 @@ public class RedisStore<T> implements AutoCloseable {
 		}
 	}
 
-	private void execute(final @NonNull List<Request> batch) {
-		final RedisPipeline pipeline = this.client.pipeline();
-		for (final Request request : batch) {
-			pipeline.add(request.getCommand());
-		}
-
-		final List<Object> results = pipeline.execute();
-		for (int i = 0; i < batch.size(); i++) {
-			final Request request = batch.get(i);
-			final Object result = results.get(i);
-			this.dispatch(() -> request.complete(result));
+	private Object write(final @NonNull RedisCommand command) {
+		final Request request = new Request(null, command);
+		this.writes.submit(request);
+		try {
+			return request.getFuture().get();
+		} catch (final InterruptedException exception) {
+			Thread.currentThread().interrupt();
+			throw new IllegalStateException(exception);
+		} catch (final ExecutionException exception) {
+			if (exception.getCause() instanceof RuntimeException) {
+				throw (RuntimeException) exception.getCause();
+			}
+			throw new IllegalStateException(exception.getCause());
 		}
 	}
 
 	private String apply(final @NonNull RedisJsonPatch patch) {
-		final RedisCommand command = patch.toCommand();
 		RuntimeException failure = null;
 		for (int attempt = 0; attempt < Math.max(1, this.config.getPatchAttempts()); attempt++) {
 			if (attempt > 0) {
@@ -328,7 +310,7 @@ public class RedisStore<T> implements AutoCloseable {
 			}
 
 			try {
-				final List<Object> reply = this.client.execute(command);
+				final List<Object> reply = this.send(patch);
 				final long status = (Long) reply.get(0);
 				if (status == RedisJsonPatch.REJECTED) {
 					throw new RedisLockLostException(patch.getGuard().getKey());
@@ -348,7 +330,7 @@ public class RedisStore<T> implements AutoCloseable {
 		}
 
 		if (this.isApplied(patch)) {
-			return this.fetchJson(patch.getKey());
+			return patch.isMerged() ? this.fetchJson(patch.getKey()) : null;
 		}
 		throw failure;
 	}
@@ -386,6 +368,18 @@ public class RedisStore<T> implements AutoCloseable {
 		return objects;
 	}
 
+	@SuppressWarnings("unchecked")
+	private @NonNull List<Object> send(final @NonNull RedisJsonPatch patch) {
+		try {
+			return (List<Object>) this.write(patch.toShaCommand());
+		} catch (final JedisDataException exception) {
+			if (exception.getMessage() == null || !exception.getMessage().startsWith("NOSCRIPT")) {
+				throw exception;
+			}
+			return (List<Object>) this.write(patch.toCommand());
+		}
+	}
+
 	private void fire(final @NonNull Consumer<RedisStoreListener<T>> action) {
 		for (final RedisStoreListener<T> listener : this.listeners) {
 			try {
@@ -394,6 +388,10 @@ public class RedisStore<T> implements AutoCloseable {
 				RedisStore.LOGGER.log(Level.WARNING, "Listener of store '" + this.config.getName() + "' failed", throwable);
 			}
 		}
+	}
+
+	private @NonNull String lane(final @NonNull String key, final @NonNull T object) {
+		return this.snapshotted ? key + "@" + Integer.toHexString(System.identityHashCode(object)) : key;
 	}
 
 	private boolean isCancelled(final @NonNull Predicate<RedisStoreListener<T>> check) {
@@ -405,10 +403,26 @@ public class RedisStore<T> implements AutoCloseable {
 		return false;
 	}
 
+	private void doDelete(final @NonNull T object, final @NonNull String key, final RedisLockToken token) {
+		this.client.getMetrics().timer(this.metric("delete.latency")).record(() -> {
+			if (token == null) {
+				this.write(RedisCommand.Json.del(key));
+			} else {
+				final Long result = (Long) this.write(RedisCommand.Base.eval(RedisStore.DELETE_SCRIPT, 2, key, token.getKey(), token.getToken()));
+				if (result != null && result == RedisJsonPatch.REJECTED) {
+					throw new RedisLockLostException(token.getKey());
+				}
+			}
+
+			this.client.getJsonSerializer().removeSnapshot(key);
+			this.fire(listener -> listener.onPostDelete(object));
+		});
+	}
+
 	private @NonNull CompletableFuture<Object> submit(final String key, final @NonNull RedisCommand command) {
 		final Request request = new Request(key, command);
 		if (key == null) {
-			this.queue.add(request);
+			this.reads.submit(request);
 			return request.getFuture();
 		}
 
@@ -418,53 +432,35 @@ public class RedisStore<T> implements AutoCloseable {
 			return existing.getFuture();
 		}
 
-		this.queue.add(request);
+		this.reads.submit(request);
 		return request.getFuture();
 	}
 
-	private @NonNull CompletableFuture<Void> doDelete(final @NonNull T object, final @NonNull String key, final RedisLockToken token) {
-		return CompletableFuture.runAsync(() -> this.client.getMetrics().timer(this.metric("delete.latency")).record(() -> {
-			if (token == null) {
-				this.client.execute(RedisCommand.Json.del(key));
-			} else {
-				final Long result = this.client.execute(RedisCommand.Base.eval(RedisStore.DELETE_SCRIPT, 2, key, token.getKey(), token.getToken()));
-				if (result != null && result == RedisJsonPatch.REJECTED) {
-					throw new RedisLockLostException(token.getKey());
-				}
-			}
-
-			this.client.getJsonSerializer().removeSnapshot(key);
-			this.fire(listener -> listener.onPostDelete(object));
-		}), this.executor);
-	}
-
-	private @NonNull CompletableFuture<Void> chain(final @NonNull String key, final @NonNull Supplier<CompletableFuture<Void>> operation) {
+	private @NonNull CompletableFuture<Void> chain(final @NonNull String lane, final @NonNull Runnable operation) {
 		final CompletableFuture<Void> chained;
 		try {
-			chained = this.operations.compute(key, (k, previous) -> {
-				final CompletableFuture<Void> base = previous == null ? CompletableFuture.completedFuture(null) : previous.handle((value, error) -> null);
-				return base.thenComposeAsync(value -> operation.get(), this.executor);
-			});
+			chained = this.operations.compute(lane, (k, previous) -> previous == null ? CompletableFuture.runAsync(operation, this.executor) : previous.handle((value, error) -> null).thenRunAsync(operation, this.executor));
 		} catch (final Throwable throwable) {
 			return RedisStore.failed(throwable);
 		}
-		chained.whenComplete((result, error) -> this.operations.remove(key, chained));
+		chained.whenComplete((result, error) -> this.operations.remove(lane, chained));
 		return chained;
 	}
 
-	private @NonNull CompletableFuture<Void> doSave(final @NonNull T object, final @NonNull String key, final @NonNull JsonElement captured, final RedisLockToken token) {
-		return CompletableFuture.runAsync(() -> this.client.getMetrics().timer(this.metric("save.latency")).record(() -> {
+	private void doSave(final @NonNull T object, final @NonNull String key, final @NonNull JsonElement captured, final RedisLockToken token) {
+		this.client.getMetrics().timer(this.metric("save.latency")).record(() -> {
 			final boolean create = !this.client.getJsonSerializer().hasSnapshot(key);
 			final RedisJsonSerializeResult result = this.client.getJsonSerializer().prepare(key, object, captured);
 			if (token != null) {
 				result.getPatch().guard(token);
 			}
 
+			result.getPatch().merged(this.isMergedRequired());
 			final String json = this.apply(result.getPatch());
 			result.getCommitLocal().run();
 			this.client.getMetrics().counter(this.metric("save.success")).increment();
 			this.fire(listener -> listener.onPostSave(object, json, create));
-		}), this.executor);
+		});
 	}
 
 	private static Long parseVersion(final String raw) {
@@ -496,12 +492,172 @@ public class RedisStore<T> implements AutoCloseable {
 		return executor;
 	}
 
-	private static @NonNull ScheduledExecutorService createScheduler(final @NonNull RedisStoreConfig<?> config) {
-		return Executors.newSingleThreadScheduledExecutor(runnable -> {
-			final Thread thread = new Thread(runnable, "HestiaFlusher-" + config.getName());
-			thread.setDaemon(true);
-			return thread;
-		});
+	private final class Batcher {
+
+		private final int drains;
+		private final String name;
+		private final long lingerMs;
+		private final boolean inline;
+		private final ScheduledThreadPoolExecutor threads;
+		private final AtomicInteger active = new AtomicInteger();
+		private final AtomicBoolean scheduled = new AtomicBoolean();
+		private final Queue<Request> queue = new ConcurrentLinkedQueue<>();
+
+		private Batcher(final @NonNull String name, final @NonNull Duration linger, final boolean inline) {
+			this.name = name;
+			this.inline = inline;
+			this.lingerMs = Math.max(0L, linger.toMillis());
+			this.drains = Math.max(1, RedisStore.this.client.getConfig().getPoolSize());
+			this.threads = new ScheduledThreadPoolExecutor(this.drains, runnable -> {
+				final Thread flusher = new Thread(runnable, "HestiaFlusher-" + RedisStore.this.config.getName() + "-" + name);
+				flusher.setDaemon(true);
+				return flusher;
+			});
+			this.threads.setKeepAliveTime(60L, TimeUnit.SECONDS);
+			this.threads.allowCoreThreadTimeOut(true);
+		}
+
+		public void close() {
+			this.threads.shutdown();
+			try {
+				this.threads.awaitTermination(30L, TimeUnit.SECONDS);
+			} catch (final InterruptedException exception) {
+				Thread.currentThread().interrupt();
+			}
+
+			List<Request> batch;
+			while (!(batch = this.poll()).isEmpty()) {
+				this.send(batch);
+			}
+		}
+
+		public void drainNow() {
+			this.spawn();
+		}
+
+		public void submit(final @NonNull Request request) {
+			this.queue.add(request);
+			if (this.inline && this.lingerMs <= 0L && this.acquire()) {
+				this.drain();
+				return;
+			}
+			this.wake();
+		}
+
+		private void wake() {
+			if (this.lingerMs <= 0L || this.threads.isShutdown()) {
+				this.spawn();
+			} else if (this.scheduled.compareAndSet(false, true)) {
+				this.threads.schedule(this::release, this.lingerMs, TimeUnit.MILLISECONDS);
+			}
+		}
+
+		private void drain() {
+			try {
+				final List<Request> batch = this.poll();
+				if (!batch.isEmpty()) {
+					this.send(batch);
+				}
+			} finally {
+				this.active.decrementAndGet();
+			}
+
+			if (!this.queue.isEmpty()) {
+				this.wake();
+			}
+		}
+
+		private void spawn() {
+			if (this.queue.isEmpty() || !this.acquire()) {
+				return;
+			}
+
+			if (this.threads.isShutdown()) {
+				this.drain();
+			} else {
+				this.threads.execute(this::drain);
+			}
+		}
+
+		private void release() {
+			this.scheduled.set(false);
+			this.spawn();
+		}
+
+		private boolean acquire() {
+			while (true) {
+				final int current = this.active.get();
+				if (current >= this.drains) {
+					return false;
+				}
+
+				if (this.active.compareAndSet(current, current + 1)) {
+					return true;
+				}
+			}
+		}
+
+		private @NonNull List<Request> poll() {
+			final List<Request> batch = new ArrayList<>();
+			Request request;
+			while ((request = this.queue.poll()) != null) {
+				batch.add(request);
+				if (request.getKey() != null) {
+					RedisStore.this.requests.remove(request.getKey(), request);
+				}
+			}
+			return batch;
+		}
+
+		private void send(final @NonNull List<Request> batch) {
+			final RedisMetricRecorder metrics = RedisStore.this.client.getMetrics();
+			metrics.gauge(RedisStore.this.metric(this.name + ".flush.size")).set(batch.size());
+			metrics.counter(RedisStore.this.metric(this.name + ".flush.total")).increment();
+			try {
+				metrics.timer(RedisStore.this.metric(this.name + ".flush.latency")).record(() -> this.execute(batch));
+			} catch (final Throwable throwable) {
+				metrics.counter(RedisStore.this.metric(this.name + ".flush.failed")).increment();
+				for (final Request failed : batch) {
+					failed.getFuture().completeExceptionally(throwable);
+				}
+			}
+		}
+
+		private void execute(final @NonNull List<Request> batch) {
+			if (batch.size() == 1) {
+				this.executeSingle(batch.get(0));
+				return;
+			}
+
+			final RedisPipeline pipeline = RedisStore.this.client.pipeline();
+			for (final Request request : batch) {
+				pipeline.add(request.getCommand());
+			}
+
+			final List<Object> results = pipeline.execute();
+			for (int i = 0; i < batch.size(); i++) {
+				this.complete(batch.get(i), results.get(i));
+			}
+		}
+
+		private void executeSingle(final @NonNull Request request) {
+			Object result;
+			try {
+				result = RedisStore.this.client.execute(request.getCommand().withResponse(RedisResponse.raw()));
+			} catch (final RuntimeException exception) {
+				result = exception;
+			}
+			this.complete(request, result);
+		}
+
+		private void complete(final @NonNull Request request, final Object result) {
+			if (this.inline) {
+				request.complete(result);
+			} else {
+				RedisStore.this.dispatch(() -> request.complete(result));
+			}
+		}
+
 	}
 
 	@Getter

@@ -18,8 +18,9 @@ public class RedisStoreConfig<T> {
 	private int threads = 128;
 	private int batchSize = 100;
 	private int patchAttempts = 5;
+	private Duration readFlushInterval = Duration.ZERO;
+	private Duration writeFlushInterval = Duration.ZERO;
 	private Duration patchBackoff = Duration.ofMillis(250L);
-	private Duration flushInterval = Duration.ofMillis(50L);
 	private Predicate<String> keyFilter = id -> id.indexOf(':') < 0;
 
 	protected RedisStoreConfig(final @NonNull String name, final @NonNull Class<T> type, final @NonNull Function<T, String> identifier) {
@@ -56,13 +57,18 @@ public class RedisStoreConfig<T> {
 		return (C) this;
 	}
 
-	public final @NonNull <C extends RedisStoreConfig<T>> C flushInterval(final @NonNull Duration flushInterval) {
-		this.flushInterval = flushInterval;
+	public final @NonNull <C extends RedisStoreConfig<T>> C keyFilter(final @NonNull Predicate<String> keyFilter) {
+		this.keyFilter = keyFilter;
 		return (C) this;
 	}
 
-	public final @NonNull <C extends RedisStoreConfig<T>> C keyFilter(final @NonNull Predicate<String> keyFilter) {
-		this.keyFilter = keyFilter;
+	public final @NonNull <C extends RedisStoreConfig<T>> C readFlushInterval(final @NonNull Duration readFlushInterval) {
+		this.readFlushInterval = readFlushInterval;
+		return (C) this;
+	}
+
+	public final @NonNull <C extends RedisStoreConfig<T>> C writeFlushInterval(final @NonNull Duration writeFlushInterval) {
+		this.writeFlushInterval = writeFlushInterval;
 		return (C) this;
 	}
 

@@ -200,17 +200,25 @@ public final class RedisCommand {
 		}
 
 		public static @NonNull RedisCommand eval(final @NonNull String script, final int keyCount, final @NonNull String... keysAndArgs) {
-			final String[] args = new String[keysAndArgs.length + 2];
-			args[0] = script;
-			args[1] = String.valueOf(keyCount);
-			System.arraycopy(keysAndArgs, 0, args, 2, keysAndArgs.length);
-			return new RedisCommand(RedisProtocol.EVAL, args);
+			return new RedisCommand(RedisProtocol.EVAL, RedisCommand.Base.script(script, keyCount, keysAndArgs));
+		}
+
+		public static @NonNull RedisCommand evalsha(final @NonNull String sha, final int keyCount, final @NonNull String... keysAndArgs) {
+			return new RedisCommand(RedisProtocol.EVALSHA, RedisCommand.Base.script(sha, keyCount, keysAndArgs));
 		}
 
 		private static @NonNull String[] prepend(final @NonNull String first, final @NonNull String... values) {
 			final String[] args = new String[values.length + 1];
 			args[0] = first;
 			System.arraycopy(values, 0, args, 1, values.length);
+			return args;
+		}
+
+		private static @NonNull String[] script(final @NonNull String script, final int keyCount, final @NonNull String... keysAndArgs) {
+			final String[] args = new String[keysAndArgs.length + 2];
+			args[0] = script;
+			args[1] = String.valueOf(keyCount);
+			System.arraycopy(keysAndArgs, 0, args, 2, keysAndArgs.length);
 			return args;
 		}
 

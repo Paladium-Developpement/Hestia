@@ -164,7 +164,7 @@ public final class RedisJsonSerializer {
 		return RedisJsonSerializer.resolveField(RedisJsonSerializer.VERSION_FIELDS, clazz, RedisJsonVersion.class, long.class);
 	}
 
-	private static Field resolveSnapshotField(final @NonNull Class<?> clazz) {
+	public static Field resolveSnapshotField(final @NonNull Class<?> clazz) {
 		return RedisJsonSerializer.resolveField(RedisJsonSerializer.SNAPSHOT_FIELDS, clazz, RedisJsonSnapshot.class, JsonElement.class);
 	}
 

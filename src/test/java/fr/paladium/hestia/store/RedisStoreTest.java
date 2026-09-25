@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -157,6 +158,18 @@ public class RedisStoreTest {
 	}
 
 	@Test
+	public void flushedScriptsAreReloaded() throws Exception {
+		final TestAccount account = RedisStoreTest.account(1L);
+		try (Jedis admin = HestiaTestSupport.admin()) {
+			admin.scriptFlush();
+		}
+
+		account.setBalance(2L);
+		HestiaTestSupport.join(RedisStoreTest.first.save(account));
+		assertEquals(2L, HestiaTestSupport.join(RedisStoreTest.second.fetch(account.getId())).getBalance());
+	}
+
+	@Test
 	public void listenersCanCancelDeletes() throws Exception {
 		final TestAccount account = RedisStoreTest.account(3L);
 		RedisStoreTest.first.listen(new RedisStoreListener<TestAccount>() {
@@ -230,6 +243,19 @@ public class RedisStoreTest {
 	}
 
 	@Test
+	public void rapidSavesOfOneInstanceStayOrdered() throws Exception {
+		final TestAccount account = RedisStoreTest.account(0L);
+		final List<CompletableFuture<Void>> saves = new ArrayList<>();
+		for (int i = 0; i < 50; i++) {
+			account.setBalance(account.getBalance() + 1L);
+			saves.add(RedisStoreTest.first.save(account));
+		}
+
+		HestiaTestSupport.join(CompletableFuture.allOf(saves.toArray(new CompletableFuture[0])));
+		assertEquals(50L, HestiaTestSupport.join(RedisStoreTest.second.fetch(account.getId())).getBalance());
+	}
+
+	@Test
 	public void concurrentReadsGetTheirOwnInstance() throws Exception {
 		final TestAccount account = RedisStoreTest.account(5L);
 		final CompletableFuture<TestAccount> firstRead = RedisStoreTest.first.fetch(account.getId());
@@ -298,6 +324,41 @@ public class RedisStoreTest {
 
 		RedisStoreTest.firstClient.execute(RedisCommand.Json.set(new Gson(), key, account));
 		assertEquals("derived", HestiaTestSupport.join(RedisStoreTest.second.fetch(account.getId())).getDescription());
+	}
+
+	@Test
+	public void lingeringReadsAreGroupedAndDeduplicated() throws Exception {
+		final TestAccount account = RedisStoreTest.account(3L);
+		try (RedisStore<TestAccount> store = RedisStore.create(RedisStoreTest.secondClient, RedisStoreConfig.create(TestAccount.class, TestAccount::getId).readFlushInterval(Duration.ofMillis(100L)))) {
+			final long start = System.nanoTime();
+			final CompletableFuture<TestAccount> first = store.fetch(account.getId());
+			final CompletableFuture<TestAccount> second = store.fetch(account.getId());
+			assertEquals(3L, HestiaTestSupport.join(first).getBalance());
+			assertEquals(3L, HestiaTestSupport.join(second).getBalance());
+			assertTrue(System.nanoTime() - start >= 90_000_000L);
+			assertNotSame(first.get(), second.get());
+		}
+	}
+
+	@Test
+	public void pipelinedWritesKeepEveryObjectConsistent() throws Exception {
+		for (final Duration linger : new Duration[] { Duration.ZERO, Duration.ofMillis(20L) }) {
+			try (RedisStore<TestAccount> store = RedisStore.create(RedisStoreTest.secondClient, RedisStoreConfig.create(TestAccount.class, TestAccount::getId).writeFlushInterval(linger))) {
+				final List<TestAccount> accounts = new ArrayList<>();
+				final List<CompletableFuture<Void>> saves = new ArrayList<>();
+				for (int i = 0; i < 40; i++) {
+					final TestAccount account = new TestAccount(HestiaTestSupport.randomId());
+					account.setBalance(i);
+					accounts.add(account);
+					saves.add(store.save(account));
+				}
+
+				HestiaTestSupport.join(CompletableFuture.allOf(saves.toArray(new CompletableFuture[0])));
+				for (final TestAccount account : accounts) {
+					assertEquals(account.getBalance(), HestiaTestSupport.join(RedisStoreTest.first.fetch(account.getId())).getBalance());
+				}
+			}
+		}
 	}
 
 	private static TestAccount account(final long balance) throws Exception {

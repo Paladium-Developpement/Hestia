@@ -49,6 +49,8 @@ public class ConfigTest {
 		assertEquals(128, config.getThreads());
 		assertEquals(100, config.getBatchSize());
 		assertEquals(5, config.getPatchAttempts());
+		assertEquals(Duration.ZERO, config.getReadFlushInterval());
+		assertEquals(Duration.ZERO, config.getWriteFlushInterval());
 		assertTrue(config.getKeyFilter().test("abc"));
 		assertFalse(config.getKeyFilter().test("lock:abc"));
 	}

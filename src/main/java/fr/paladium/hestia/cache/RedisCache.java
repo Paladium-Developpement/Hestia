@@ -87,6 +87,11 @@ public class RedisCache<T> implements RedisStoreListener<T>, AutoCloseable {
 		return this.view;
 	}
 
+	@Override
+	public boolean requiresMergedDocument() {
+		return true;
+	}
+
 	public @NonNull CompletableFuture<Void> refresh() {
 		final List<T> snapshot = new ArrayList<>(this.values.values());
 		return this.store.fetchVersions().thenCompose(versions -> {

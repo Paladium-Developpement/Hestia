@@ -4,6 +4,10 @@ import lombok.NonNull;
 
 public interface RedisStoreListener<T> {
 
+	public default boolean requiresMergedDocument() {
+		return false;
+	}
+
 	public default void onPostLoad(final @NonNull T object) {}
 
 	public default void onPostDelete(final @NonNull T object) {}

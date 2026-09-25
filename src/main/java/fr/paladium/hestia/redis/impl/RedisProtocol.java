@@ -20,6 +20,7 @@ public enum RedisProtocol implements ProtocolCommand {
 	SET("SET"),
 	GET("GET"),
 	EVAL("EVAL"),
+	EVALSHA("EVALSHA"),
 	PING("PING"),
 	PUBLISH("PUBLISH"),
 

@@ -20,31 +20,39 @@ public class RedisJsonPatchTest {
 
 	@Test
 	public void markersUseTheKeyNamespace() {
-		final RedisJsonPatch patch = RedisJsonPatch.create("faction:abc", RedisJsonPatchTest.GSON);
-		assertEquals("faction-patch:" + patch.getId(), patch.getMarker());
+		final RedisJsonPatch patch = RedisJsonPatch.create("account:abc", RedisJsonPatchTest.GSON);
+		assertEquals("account-patch:" + patch.getId(), patch.getMarker());
 		assertTrue(RedisJsonPatch.create("plain", RedisJsonPatchTest.GSON).getMarker().startsWith("plain-patch:"));
 	}
 
 	@Test
 	public void operationsAreEncodedByFive() {
-		final RedisJsonPatch patch = RedisJsonPatch.create("faction:abc", RedisJsonPatchTest.GSON).set("$.a", "$", new JsonPrimitive(1)).remove("$.b", new JsonPrimitive("x"));
+		final RedisJsonPatch patch = RedisJsonPatch.create("account:abc", RedisJsonPatchTest.GSON).set("$.a", "$", new JsonPrimitive(1)).remove("$.b", new JsonPrimitive("x"));
 		assertEquals(2, patch.size());
 		assertEquals(10, patch.getOperations().size());
 	}
 
 	@Test
 	public void unguardedPatchesUseTwoKeys() {
-		final RedisJsonPatch patch = RedisJsonPatch.create("faction:abc", RedisJsonPatchTest.GSON).increment("$.balance", "$", "5", new JsonPrimitive(15));
+		final RedisJsonPatch patch = RedisJsonPatch.create("account:abc", RedisJsonPatchTest.GSON).increment("$.balance", "$", "5", new JsonPrimitive(15));
 		final List<String> args = Arrays.asList(patch.toCommand().getArgs());
 		assertEquals(RedisProtocol.EVAL, patch.toCommand().getCommand());
-		assertEquals(Arrays.asList("2", "faction:abc", patch.getMarker(), "600", "", "1", "I", "$.balance", "$", "5", "15"), args.subList(1, args.size()));
+		assertEquals(Arrays.asList("2", "account:abc", patch.getMarker(), "600", "", "0", "1", "I", "$.balance", "$", "5", "15"), args.subList(1, args.size()));
 	}
 
 	@Test
 	public void guardedPatchesSendTheLockAsThirdKey() {
-		final RedisJsonPatch patch = RedisJsonPatch.create("faction:abc", RedisJsonPatchTest.GSON).delete("$.name").guard(new RedisLockToken("lock:abc", "token"));
+		final RedisJsonPatch patch = RedisJsonPatch.create("account:abc", RedisJsonPatchTest.GSON).delete("$.name").merged(true).guard(new RedisLockToken("lock:abc", "token"));
 		final List<String> args = Arrays.asList(patch.toCommand().getArgs());
-		assertEquals(Arrays.asList("3", "faction:abc", patch.getMarker(), "lock:abc", "600", "token", "1", "D", "$.name", "", "", ""), args.subList(1, args.size()));
+		assertEquals(Arrays.asList("3", "account:abc", patch.getMarker(), "lock:abc", "600", "token", "1", "1", "D", "$.name", "", "", ""), args.subList(1, args.size()));
+	}
+
+	@Test
+	public void cachedCommandsReferenceTheScriptHash() {
+		final RedisJsonPatch patch = RedisJsonPatch.create("account:abc", RedisJsonPatchTest.GSON);
+		assertEquals(RedisProtocol.EVALSHA, patch.toShaCommand().getCommand());
+		assertEquals(40, patch.toShaCommand().getArgs()[0].length());
+		assertEquals(Arrays.asList(patch.toCommand().getArgs()).subList(1, 7), Arrays.asList(patch.toShaCommand().getArgs()).subList(1, 7));
 	}
 
 }
