@@ -31,15 +31,14 @@ Vous modifiez vos objets Java normalement, vous appelez `save`, et Hestia s'occu
 
 ## Bench
 
-| Mesure | Redis classique | Hestia |
+| | Redis classique | Hestia |
 |---|---|---|
-| Écritures perdues (8 écrivains, même objet) | 1 725 / 2 000 | **0 / 2 000** |
-| Débit sans perte (8 écrivains, même objet) | 992 ops/s | **3 808 ops/s** |
-| Données envoyées par écriture | 16,2 Ko | **164 o** |
-| CPU Redis par écriture (objet de 130 Ko) | 739 µs | **49 µs** |
-| Débit (16 écrivains, objets de 130 Ko) | 1 037 ops/s | **3 750 ops/s** |
-| CPU Redis occupé (16 écrivains) | 92 % | **20 %** |
-| Lecture de 2 000 objets | 35 716 ops/s | **97 974 ops/s** |
+| Écritures perdues | 86 % | **0 %** |
+| Débit en écriture | 1 037 ops/s | **3 750 ops/s** |
+| Débit en lecture | 35 716 ops/s | **97 974 ops/s** |
+| Taille d'une écriture | 16 Ko | **164 o** |
+| CPU Redis par écriture | 739 µs | **49 µs** |
+| Charge Redis | 92 % | **20 %** |
 
 ## Utilisation
 
