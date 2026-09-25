@@ -80,7 +80,7 @@ jobs:
           COMMIT_SHA=$(git rev-parse --short=7 HEAD)
           sed -i "s/^version = '.*'/version = '${VERSION}'/" build.gradle
           sed -i "s/badge\/version-[^-]*-blue/badge\/version-${VERSION} (${COMMIT_SHA})-blue/" README.md
-          sed -i "s/hestia:[0-9][0-9.]*[0-9]/hestia:${VERSION}/g; s/hestia-[0-9][0-9.]*[0-9]/hestia-${VERSION}/g" README.md INSTALLATION.md
-          git add build.gradle README.md INSTALLATION.md
+          sed -i "s/hestia:[0-9][0-9.]*[0-9]/hestia:${VERSION}/g; s/hestia-[0-9][0-9.]*[0-9]/hestia-${VERSION}/g" README.md
+          git add build.gradle README.md
           git diff --cached --quiet || git commit -m "update: update version to ${VERSION} (🔖)"
           git push origin HEAD:main
