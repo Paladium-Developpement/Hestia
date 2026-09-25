@@ -15,7 +15,7 @@ Stockez des objets Java dans Redis, partagés entre autant de processus que vous
 <br><br>
 Écritures atomiques et idempotentes, fusion automatique des modifications concurrentes, caches locaux synchronisés, verrous distribués.
 
-[Pourquoi](#pourquoi) • [Bench](#bench) • [Installation](#installation) • [Utilisation](#utilisation) • [Build](#build)
+[Pourquoi](#pourquoi) • [Bench](#bench) • [Utilisation](#utilisation) • [Build](#build)
 
 </div>
 
@@ -38,105 +38,15 @@ Hestia supprime ce choix. Vous modifiez vos objets Java normalement et vous appe
 
 ## Bench
 
-Mesuré sur Redis 8.6.2 et Java 8, le client et Redis tournant dans deux conteneurs Linux sur le même réseau Docker (24 cœurs). Chaque valeur est la médiane de 5 exécutions. Les documents contiennent 150 entrées (16 Ko) ou 1 200 entrées (130 Ko). La colonne « CPU Redis » vient de `INFO commandstats` : c'est le temps que Redis passe réellement sur chaque écriture, là où un serveur partagé sature en premier.
+Comparé à l'usage classique de Redis (relire puis réécrire l'objet avec `JSON.SET`) :
 
-### Mise à jour d'un champ, un seul écrivain
-
-| Document | Approche | Envoyé | CPU Redis | p50 | p99 | Débit |
-|---|---|---|---|---|---|---|
-| 16 Ko | `JSON.SET` du document complet | 16,2 Ko | 108 µs | 0,42 ms | 0,67 ms | 2 247 ops/s |
-| 16 Ko | **Hestia** | **164 o** | **40 µs** | **0,35 ms** | 0,68 ms | **2 565 ops/s** |
-| 130 Ko | `JSON.SET` du document complet | 133,5 Ko | 739 µs | 1,63 ms | 2,81 ms | 571 ops/s |
-| 130 Ko | **Hestia** | **165 o** | **49 µs** | **1,12 ms** | **1,96 ms** | **833 ops/s** |
-
-Avec un seul écrivain et un réseau local sans limite de débit, la latence est proche sur un petit document. Mais Hestia envoie **100 fois moins de données** et coûte **2,7 à 15 fois moins de CPU à Redis**, et l'écart grandit avec la taille du document : le coût d'un patch ne dépend que de ce qui change.
-
-### 16 écrivains sur des objets différents de 130 Ko
-
-| Approche | Durée | Débit | CPU Redis occupé |
-|---|---|---|---|
-| `JSON.SET` du document complet | 3 858 ms | 1 037 ops/s | 92 % |
-| **Hestia** | **1 067 ms** | **3 750 ops/s** | **20 %** |
-
-Dès que plusieurs processus écrivent, Redis devient le goulot : réécrire des documents complets le sature à 92 %. Avec Hestia, **le même Redis encaisse 3,6 fois plus d'écritures** en restant à un cinquième de sa capacité. Ici, la limite de Hestia est le CPU du client (sérialiser et comparer 130 Ko), pas Redis.
-
-### 8 écrivains concurrents sur le même objet (2 000 incréments)
-
-| Approche | Valeur finale | Écritures perdues | Rejeux | Durée | Débit |
-|---|---|---|---|---|---|
-| Relire puis `JSON.SET` | 275 | **1 725** | 0 | 414 ms | 4 827 ops/s |
-| `WATCH` / `MULTI` (optimiste) | 2 000 | 0 | 10 248 | 2 016 ms | 992 ops/s |
-| **Hestia** | **2 000** | **0** | **0** | 525 ms | **3 808 ops/s** |
-
-Relire puis réécrire va vite parce qu'il ne protège rien : **86 % des écritures sont perdues**, sans aucune erreur. La méthode optimiste est correcte mais rejoue chaque conflit (10 248 fois ici). Hestia est correcte sans aucun rejeu, et **près de 4 fois plus rapide** que la seule autre approche correcte.
-
-### Envoi des écritures simultanées
-
-Chaque écriture Hestia part directement sur une connexion libre du pool. Quand toutes les connexions sont occupées, les écritures en attente partent groupées en pipeline sur la prochaine connexion libérée. Comparaison avec les deux stratégies classiques, en débit (médiane de 5 exécutions, `WriteBenchmark`) :
-
-| Charge | Réseau | Une commande par écriture | Un seul pipeline | **Hestia** |
-|---|---|---|---|---|
-| 64 écrivains, objets de 2 Ko | local | 12 081 ops/s | 15 744 ops/s | **20 448 ops/s** |
-| 64 écrivains, objets de 2 Ko | +1 ms d'aller-retour | 7 313 ops/s | 10 771 ops/s | **15 987 ops/s** |
-| 16 écrivains, objets de 130 Ko | local | 3 717 ops/s | 3 893 ops/s | **3 910 ops/s** |
-| 16 écrivains, objets de 130 Ko | +1 ms d'aller-retour | 3 430 ops/s | 2 977 ops/s | 3 319 ops/s |
-
-Avec beaucoup de petites écritures, Hestia envoie **2,2 fois plus** qu'une commande par écriture dès que Redis est à 1 ms. Avec peu d'écrivains, chaque écriture a sa propre connexion, comme en envoi direct : les trois stratégies se valent, et l'écart restant est dans le bruit de mesure. La latence de 1 ms est ajoutée par un proxy [toxiproxy](https://github.com/Shopify/toxiproxy) entre le client et Redis.
-
-### Lecture de 2 000 objets depuis 16 threads
-
-| Approche | Durée | Débit |
+| | Sans Hestia | Avec Hestia |
 |---|---|---|
-| Un `JSON.GET` par lecture (pool de connexions) | 56 ms | 35 716 ops/s |
-| **Hestia** (lectures regroupées en pipeline) | **20 ms** | **97 974 ops/s** |
-| Hestia avec `readFlushInterval` à 50 ms | 86 ms | 23 146 ops/s |
-| **Hestia**, 2 000 lectures du même objet (dédupliquées) | 14 ms | 146 140 ops/s |
-
-Chaque appelant reçoit sa propre instance, même quand la lecture a été partagée. Un délai de regroupement (`readFlushInterval`) ajoute sa durée à chaque lecture : il ne sert qu'à dédupliquer davantage quand beaucoup de lectures identiques arrivent en rafale.
-
-### Reproduire
-
-Le code est dans `src/bench`. `gradlew bench` démarre son propre Redis avec Testcontainers. Pour mesurer contre un Redis existant, passer son hôte et son port à `fr.paladium.hestia.bench.HestiaBenchmark` ; `WriteBenchmark` prend en plus un libellé.
-
-Sous Docker Desktop (Windows, macOS), la redirection de ports ajoute une latence d'environ 40 ms aux requêtes de plus de 16 Ko, ce qui fausse les comparaisons. Pour des chiffres fiables, lancer le client dans un conteneur sur le même réseau que Redis, comme pour les résultats ci-dessus.
-
-## Installation
-
-### Prérequis
-
-| Élément | Version |
-|---|---|
-| Java | 8 ou plus |
-| Redis | 8 ou plus (modules JSON et Search inclus), ou Redis Stack 7 |
-| Gson | 2.8.6 ou plus |
-
-### Dépendance
-
-```gradle
-repositories {
-    maven {
-        url = "http://repository.palagitium.dev/artifactory/Paladium-DEVENV"
-        credentials {
-            username = System.getenv('MAVEN_REPO_USER') ?: project.findProperty('MAVEN_REPO_USER')
-            password = System.getenv('MAVEN_REPO_PASS') ?: project.findProperty('MAVEN_REPO_PASS')
-        }
-    }
-}
-
-dependencies {
-    implementation "fr.paladium:hestia:1.0.0"
-}
-```
-
-Chaque version publie trois jars :
-
-| Jar | Contenu | Quand l'utiliser |
-|---|---|---|
-| `hestia-1.0.0.jar` | Hestia seule, dépendances déclarées dans le POM | cas général, via Maven ou Gradle |
-| `hestia-1.0.0-all.jar` | Hestia avec Jedis, commons-pool, org.json, slf4j et reflections relocalisés sous `fr.paladium.hestia.libs` | environnements sans gestion de dépendances, ou qui embarquent déjà une autre version de Jedis |
-| `hestia-1.0.0-sources.jar` | sources | IDE |
-
-Gson n'est jamais embarqué : il fait partie de l'API publique et doit être fourni par l'application.
+| 8 écrivains simultanés sur le même objet | **86 % des écritures perdues** | **0 perte**, 4× plus rapide que `WATCH` / `MULTI` |
+| Données envoyées pour changer un champ | 16 Ko | **164 octets** |
+| CPU Redis par écriture (objet de 130 Ko) | 739 µs | **49 µs** |
+| 16 écrivains en continu | Redis saturé à 92 % | **3,6× plus d'écritures**, Redis à 20 % |
+| Lecture de 2 000 objets | 35 716 ops/s | **97 974 ops/s** |
 
 ## Utilisation
 
