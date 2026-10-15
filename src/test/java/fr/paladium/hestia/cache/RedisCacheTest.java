@@ -125,6 +125,33 @@ public class RedisCacheTest {
 	}
 
 	@Test
+	public void lateSyncsNeverRestoreDeletedObjects() throws Exception {
+		final List<Consumer<CacheMessage>> bus = new CopyOnWriteArrayList<>();
+		final MemoryCacheTransport transport = new MemoryCacheTransport(bus);
+		final RedisCache<TestAccount> sender = RedisCacheTest.cache(RedisCacheTest.firstClient, RedisCacheConfig.create().transport(transport));
+		final RedisCache<TestAccount> receiver = RedisCacheTest.cache(RedisCacheTest.secondClient, RedisCacheConfig.create().transport(new MemoryCacheTransport(bus)));
+		HestiaTestSupport.join(sender.start());
+		HestiaTestSupport.join(receiver.start());
+
+		final TestAccount account = new TestAccount(HestiaTestSupport.randomId());
+		account.setBalance(3L);
+		HestiaTestSupport.join(sender.getStore().save(account));
+		final CacheMessage sync = transport.getPublished().get(transport.getPublished().size() - 1);
+
+		HestiaTestSupport.join(sender.getStore().delete(account));
+		for (final Consumer<CacheMessage> subscriber : bus) {
+			subscriber.accept(sync);
+		}
+		final boolean restored = receiver.get(account.getId()).isPresent();
+
+		sender.close();
+		receiver.close();
+		sender.getStore().close();
+		receiver.getStore().close();
+		assertFalse(restored);
+	}
+
+	@Test
 	public void customTransportsCarryTheSynchronization() throws Exception {
 		final List<Consumer<CacheMessage>> bus = new CopyOnWriteArrayList<>();
 		final MemoryCacheTransport transport = new MemoryCacheTransport(bus);

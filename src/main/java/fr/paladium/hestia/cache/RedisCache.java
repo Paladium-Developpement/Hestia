@@ -35,6 +35,7 @@ public class RedisCache<T> implements RedisStoreListener<T>, AutoCloseable {
 
 	private final String origin = UUID.randomUUID().toString();
 	private final Map<String, T> values = new ConcurrentHashMap<>();
+	private final Map<String, Long> deletions = new ConcurrentHashMap<>();
 	private final List<RedisCacheListener<T>> listeners = new CopyOnWriteArrayList<>();
 	private final Collection<T> view = Collections.unmodifiableCollection(this.values.values());
 
@@ -93,6 +94,9 @@ public class RedisCache<T> implements RedisStoreListener<T>, AutoCloseable {
 	}
 
 	public @NonNull CompletableFuture<Void> refresh() {
+		final long since = System.currentTimeMillis();
+		this.deletions.values().removeIf(deletedAt -> since - deletedAt > this.config.getRefreshInterval().toMillis());
+
 		final List<T> snapshot = new ArrayList<>(this.values.values());
 		return this.store.fetchVersions().thenCompose(versions -> {
 			for (final T before : snapshot) {
@@ -112,7 +116,9 @@ public class RedisCache<T> implements RedisStoreListener<T>, AutoCloseable {
 			return this.store.fetchAll(stale);
 		}).thenAccept(objects -> {
 			for (final T object : objects) {
-				this.update(object);
+				if (!this.isDeleted(this.store.getId(object), since)) {
+					this.update(object);
+				}
 			}
 		});
 	}
@@ -120,6 +126,7 @@ public class RedisCache<T> implements RedisStoreListener<T>, AutoCloseable {
 	@Override
 	public void onPostDelete(final @NonNull T object) {
 		final String id = this.store.getId(object);
+		this.deletions.put(id, System.currentTimeMillis());
 		this.remove(id);
 		this.publish(new CacheMessage(id, null, 0L, this.origin));
 	}
@@ -129,6 +136,7 @@ public class RedisCache<T> implements RedisStoreListener<T>, AutoCloseable {
 	}
 
 	public @NonNull CompletableFuture<Void> invalidate(final @NonNull String id) {
+		final long since = System.currentTimeMillis();
 		final T cached = this.values.get(id);
 		final CompletableFuture<Boolean> stale = cached == null ? CompletableFuture.completedFuture(true) : this.store.fetchVersion(id).thenApply(version -> version == null || version > this.store.getVersion(cached));
 		return stale.thenCompose(refresh -> !refresh ? CompletableFuture.<Void>completedFuture(null) : this.store.fetch(id).thenAccept(object -> {
@@ -136,7 +144,10 @@ public class RedisCache<T> implements RedisStoreListener<T>, AutoCloseable {
 				this.remove(id);
 				return;
 			}
-			this.update(object);
+
+			if (!this.isDeleted(id, since)) {
+				this.update(object);
+			}
 		}));
 	}
 
@@ -152,6 +163,7 @@ public class RedisCache<T> implements RedisStoreListener<T>, AutoCloseable {
 		}
 
 		this.store.parse(json).ifPresent(merged -> {
+			this.deletions.remove(this.store.getId(merged));
 			this.update(merged);
 			this.publish(new CacheMessage(this.store.getId(merged), json, this.store.getVersion(merged), this.origin));
 		});
@@ -218,7 +230,12 @@ public class RedisCache<T> implements RedisStoreListener<T>, AutoCloseable {
 		}
 
 		if (message.getJson() == null) {
+			this.deletions.put(message.getId(), System.currentTimeMillis());
 			this.remove(message.getId());
+			return;
+		}
+
+		if (this.deletions.containsKey(message.getId())) {
 			return;
 		}
 
@@ -236,6 +253,11 @@ public class RedisCache<T> implements RedisStoreListener<T>, AutoCloseable {
 		} catch (final Throwable throwable) {
 			RedisCache.LOGGER.log(Level.WARNING, "Publication of cache '" + this.store.getConfig().getName() + "' failed", throwable);
 		}
+	}
+
+	private boolean isDeleted(final @NonNull String id, final long since) {
+		final Long deletedAt = this.deletions.get(id);
+		return deletedAt != null && deletedAt >= since;
 	}
 
 	private void remove(final @NonNull String id, final long expectedVersion) {
