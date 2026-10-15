@@ -3,7 +3,7 @@
 # Hestia
 
 <div align="center">
-  <img align="center" src="https://img.shields.io/badge/version-1.1.0 (e6964f2)-blue">
+  <img align="center" src="https://img.shields.io/badge/version-1.1.0 (10feb68)-blue">
   <img align="center" src="https://img.shields.io/badge/java-8+-blue">
   <img align="center" src="https://img.shields.io/badge/redis-8 (JSON + Search)-red">
   <img align="center" src="https://img.shields.io/maintenance/yes/9999">
